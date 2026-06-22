@@ -3,6 +3,7 @@ import xmlrpc.client
 import sqlite3
 import smtplib
 import socket
+import json
 # Set default socket timeout of 90 seconds to prevent XML-RPC calls from hanging indefinitely
 socket.setdefaulttimeout(90)
 from collections import Counter
@@ -824,31 +825,275 @@ def get_salesperson_details(salesperson_id: int) -> dict:
     except Exception as e:
         print(f"Error fetching salesperson details: {e}")
         raise ToolException(f"Error fetching salesperson details: {e}")
+# Local JSON state file for TEST_MODE
+TEST_STATE_FILE = "campaign_test_state.json"
+_todo_cache = {}
 
+def _read_test_state() -> dict:
+    if os.path.exists(TEST_STATE_FILE):
+        try:
+            with open(TEST_STATE_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
 
-def init_memory_db():
-    """Initializes the local SQLite memories table if it does not exist."""
+def _write_test_state(state: dict):
     try:
-        conn = sqlite3.connect(config.DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS customer_memories (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                partner_id INTEGER,
-                memory_text TEXT,
-                created_at TEXT
-            );
-        """)
-        conn.commit()
-        conn.close()
+        with open(TEST_STATE_FILE, "w") as f:
+            json.dump(state, f, indent=4)
     except Exception as e:
-        print(f"Error initializing SQLite memory database: {e}")
+        print(f"Error writing test state to JSON: {e}")
+
+def clear_todo_list(partner_id: int):
+    global _todo_cache
+    if partner_id in _todo_cache:
+        del _todo_cache[partner_id]
+
+def reconstruct_lead_state_from_odoo(partner_id: int) -> dict:
+    try:
+        models, uid, db, password = get_odoo_client()
+        
+        # 1. Fetch partner basic info
+        partner_fields = ['name', 'email', 'user_id', 'active']
+        partner_data = models.execute_kw(db, uid, password, 'res.partner', 'read', [[partner_id]], {'fields': partner_fields})
+        if not partner_data:
+            return {}
+        p = partner_data[0]
+        
+        salesperson_id = p.get('user_id')[0] if p.get('user_id') else None
+        email = p.get('email') or ''
+        name = p.get('name') or ''
+        active = p.get('active', True)
+        
+        # Check global blacklist
+        is_blacklisted = False
+        if email:
+            blacklist_domain = [('email', '=', email), ('active', '=', True)]
+            blacklist_records = models.execute_kw(db, uid, password, 'mail.blacklist', 'search_count', [blacklist_domain])
+            is_blacklisted = blacklist_records > 0
+            
+        # 2. Determine last confirmed order date
+        order_domain = [
+            ('partner_id', '=', partner_id),
+            ('state', 'in', ['sale', 'done'])
+        ]
+        orders = models.execute_kw(db, uid, password, 'sale.order', 'search_read', [order_domain], {'fields': ['date_order'], 'limit': 1, 'order': 'date_order desc'})
+        last_order_date = orders[0].get('date_order') if orders else None
+        
+        # 3. Fetch Odoo chatter messages to identify campaign emails
+        message_domain = [
+            ('model', '=', 'res.partner'),
+            ('res_id', '=', partner_id),
+            ('message_type', '=', 'email')
+        ]
+        messages = models.execute_kw(db, uid, password, 'mail.message', 'search_read', [message_domain], {'fields': ['subject', 'body', 'date', 'author_id']})
+        
+        # Count sent campaign emails
+        campaign_emails = []
+        for msg in messages:
+            subject = (msg.get('subject') or '').lower()
+            body = (msg.get('body') or '').lower()
+            
+            author_info = msg.get('author_id')
+            author_id = author_info[0] if author_info else None
+            if author_id == partner_id:
+                continue
+                
+            is_campaign = False
+            stage_found = None
+            if "friendly reminder" in subject or "checking in" in subject:
+                is_campaign = True
+                stage_found = 'email_1_sent'
+            elif "welcome10" in body or "value-based" in subject or "special offer" in subject:
+                is_campaign = True
+                stage_found = 'email_2_sent'
+            elif "final attempt" in subject or "last reminder" in subject or "stop reaching out" in body:
+                is_campaign = True
+                stage_found = 'email_3_sent'
+                
+            if is_campaign:
+                campaign_emails.append({
+                    'stage': stage_found,
+                    'date': msg.get('date')
+                })
+        
+        # Sort campaign emails by date ascending
+        campaign_emails.sort(key=lambda x: x['date'])
+        
+        # Determine campaign stage and dates
+        campaign_stage = 'none'
+        last_email_sent_date = None
+        next_email_date = None
+        status = 'active'
+        
+        if campaign_emails:
+            last_email = campaign_emails[-1]
+            campaign_stage = last_email['stage']
+            last_email_sent_date = last_email['date']
+            
+            last_dt = parse_odoo_date(last_email_sent_date)
+            next_dt = last_dt + timedelta(days=7)
+            next_email_date = next_dt.isoformat()
+            
+            if campaign_stage == 'email_3_sent' and datetime.now(timezone.utc) >= next_dt:
+                status = 'cold'
+        
+        if is_blacklisted:
+            status = 'opt_out'
+        elif not active:
+            status = 'cold'
+            
+        # Check reactivated: new confirmed order since last_email_sent_date (or campaign enrollment)
+        since_date = last_email_sent_date if last_email_sent_date else last_order_date
+        if since_date:
+            new_order_domain = [
+                ('partner_id', '=', partner_id),
+                ('state', 'in', ['sale', 'done']),
+                ('date_order', '>', since_date)
+            ]
+            new_orders_count = models.execute_kw(db, uid, password, 'sale.order', 'search_count', [new_order_domain])
+            if new_orders_count > 0:
+                status = 'reactivated'
+                campaign_stage = 'none'
+                
+        return {
+            'partner_id': partner_id,
+            'partner_name': name,
+            'email': email,
+            'salesperson_id': salesperson_id,
+            'last_order_date': last_order_date,
+            'campaign_stage': campaign_stage,
+            'last_email_sent_date': last_email_sent_date,
+            'next_email_date': next_email_date,
+            'status': status,
+            'is_blacklisted': 1 if is_blacklisted else 0,
+            'suppressed': 0,
+            'suppression_reason': None
+        }
+    except Exception as e:
+        print(f"Error reconstructing lead state from Odoo for {partner_id}: {e}")
+        return {}
+
+
+@tool
+def get_campaign_lead(partner_id: int) -> dict:
+    """Retrieves the campaign lead state.
+    In TEST_MODE, reads from local JSON state.
+    In production mode, dynamically reconstructs the state from Odoo.
+    
+    Args:
+        partner_id: The Odoo customer ID.
+        
+    Returns:
+        A dictionary with the lead's state.
+    """
+    if config.TEST_MODE:
+        state_dict = _read_test_state()
+        lead = state_dict.get(str(partner_id))
+        if lead:
+            return lead
+        
+        try:
+            models, uid, db, password = get_odoo_client()
+            partner_data = models.execute_kw(db, uid, password, 'res.partner', 'read', [[partner_id]], {'fields': ['name', 'email', 'user_id']})
+            if partner_data:
+                p = partner_data[0]
+                lead = {
+                    'partner_id': partner_id,
+                    'partner_name': p.get('name') or '',
+                    'email': p.get('email') or '',
+                    'salesperson_id': p.get('user_id')[0] if p.get('user_id') else None,
+                    'last_order_date': None,
+                    'campaign_stage': 'none',
+                    'last_email_sent_date': None,
+                    'next_email_date': datetime.now(timezone.utc).isoformat(),
+                    'status': 'active',
+                    'is_blacklisted': 0,
+                    'suppressed': 0,
+                    'suppression_reason': None
+                }
+                state_dict[str(partner_id)] = lead
+                _write_test_state(state_dict)
+                return lead
+        except Exception:
+            pass
+        return {}
+    else:
+        return reconstruct_lead_state_from_odoo(partner_id)
+
+
+@tool
+def update_campaign_lead(
+    partner_id: int,
+    campaign_stage: str = None,
+    last_email_sent_date: str = None,
+    next_email_date: str = None,
+    status: str = None,
+    is_blacklisted: int = None,
+    suppressed: int = None,
+    suppression_reason: str = None
+) -> dict:
+    """Updates the campaign lead state.
+    In TEST_MODE, writes to local JSON state.
+    In production mode, updates Odoo or relies on Odoo chatter to dynamically derive state.
+    
+    Args:
+        partner_id: The Odoo customer ID.
+        campaign_stage: The new campaign stage.
+        last_email_sent_date: ISO UTC datetime string of the last email sent.
+        next_email_date: ISO UTC datetime string of when the next email can be sent.
+        status: The lead status.
+        is_blacklisted: 1 if blacklisted, 0 otherwise.
+        suppressed: 1 if suppressed, 0 otherwise.
+        suppression_reason: Reason for suppression.
+        
+    Returns:
+        A dictionary indicating success status.
+    """
+    if config.TEST_MODE:
+        state_dict = _read_test_state()
+        lead = state_dict.get(str(partner_id)) or {}
+        lead['partner_id'] = partner_id
+        if campaign_stage is not None:
+            lead['campaign_stage'] = campaign_stage
+        if last_email_sent_date is not None:
+            lead['last_email_sent_date'] = last_email_sent_date
+        if next_email_date is not None:
+            lead['next_email_date'] = next_email_date
+        if status is not None:
+            lead['status'] = status
+        if is_blacklisted is not None:
+            lead['is_blacklisted'] = is_blacklisted
+        if suppressed is not None:
+            lead['suppressed'] = suppressed
+        if suppression_reason is not None:
+            lead['suppression_reason'] = suppression_reason
+            
+        state_dict[str(partner_id)] = lead
+        _write_test_state(state_dict)
+        return {"success": True}
+    else:
+        log_msg = []
+        if campaign_stage:
+            log_msg.append(f"Campaign Stage updated to: {campaign_stage}")
+        if status:
+            log_msg.append(f"Campaign Status updated to: {status}")
+        if suppression_reason:
+            log_msg.append(f"Suppression Reason: {suppression_reason}")
+            
+        if log_msg:
+            try:
+                log_campaign_note.invoke({"partner_id": partner_id, "message_body": f"<b>Win-Back Update:</b><br/>" + "<br/>".join(log_msg)})
+            except Exception as e:
+                print(f"Error logging state update note in Odoo: {e}")
+        return {"success": True}
 
 
 @tool
 def save_customer_memory(partner_id: int, memory_text: str) -> dict:
     """Saves a new memory/interaction note for the customer to persistent memory.
-    In TEST_MODE (true), saves to a local SQLite table.
+    In TEST_MODE (true), saves to a local JSON state.
     In production mode (false), appends the note directly to Odoo's res.partner internal notes (comment field).
     
     Args:
@@ -859,25 +1104,22 @@ def save_customer_memory(partner_id: int, memory_text: str) -> dict:
         A dictionary indicating success status.
     """
     now_str = datetime.now(timezone.utc).isoformat()
-    formatted_note = f"\n- {now_str[:10]}: {memory_text}"
     
     if config.TEST_MODE:
-        init_memory_db()
-        try:
-            conn = sqlite3.connect(config.DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO customer_memories (partner_id, memory_text, created_at) VALUES (?, ?, ?)",
-                (partner_id, memory_text, now_str)
-            )
-            conn.commit()
-            conn.close()
-            print(f"[TEST MODE] Memory saved locally in SQLite for partner {partner_id}: {memory_text}")
-            return {"success": True}
-        except Exception as e:
-            print(f"Error writing local SQLite memory for partner {partner_id}: {e}")
-            raise ToolException(f"Error writing local SQLite memory for partner {partner_id}: {e}")
+        state_dict = _read_test_state()
+        lead = state_dict.get(str(partner_id)) or {}
+        memories = lead.get('memories') or []
+        memories.append({
+            'memory_text': memory_text,
+            'created_at': now_str
+        })
+        lead['memories'] = memories
+        state_dict[str(partner_id)] = lead
+        _write_test_state(state_dict)
+        print(f"[TEST MODE] Memory saved locally in JSON for partner {partner_id}: {memory_text}")
+        return {"success": True}
     else:
+        formatted_note = f"\n- {now_str[:10]}: {memory_text}"
         try:
             models, uid, db, password = get_odoo_client()
             records = models.execute_kw(
@@ -909,7 +1151,7 @@ def save_customer_memory(partner_id: int, memory_text: str) -> dict:
 @tool
 def get_customer_memories(partner_id: int) -> str:
     """Retrieves all past memory logs and notes for the customer.
-    In TEST_MODE (true), reads from the local SQLite table.
+    In TEST_MODE (true), reads from the local JSON state.
     In production mode (false), reads from Odoo's res.partner internal notes (comment field).
     
     Args:
@@ -919,23 +1161,13 @@ def get_customer_memories(partner_id: int) -> str:
         A string containing all past memory logs.
     """
     if config.TEST_MODE:
-        init_memory_db()
-        try:
-            conn = sqlite3.connect(config.DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT memory_text, created_at FROM customer_memories WHERE partner_id = ? ORDER BY id ASC",
-                (partner_id,)
-            )
-            rows = cursor.fetchall()
-            conn.close()
-            if not rows:
-                return ""
-            logs = [f"- {row[1][:10]}: {row[0]}" for row in rows]
-            return "[Win-Back Memory Log]\n" + "\n".join(logs)
-        except Exception as e:
-            print(f"Error reading local SQLite memory for partner {partner_id}: {e}")
-            raise ToolException(f"Error reading local SQLite memory for partner {partner_id}: {e}")
+        state_dict = _read_test_state()
+        lead = state_dict.get(str(partner_id)) or {}
+        memories = lead.get('memories') or []
+        if not memories:
+            return ""
+        logs = [f"- {row['created_at'][:10]}: {row['memory_text']}" for row in memories]
+        return "[Win-Back Memory Log]\n" + "\n".join(logs)
     else:
         try:
             models, uid, db, password = get_odoo_client()
@@ -957,26 +1189,6 @@ def get_customer_memories(partner_id: int) -> str:
             raise ToolException(f"Error reading Odoo native memory for partner {partner_id}: {e}")
 
 
-def init_todo_db():
-    """Initializes the local SQLite campaign_todos table if it does not exist."""
-    try:
-        conn = sqlite3.connect(config.DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS campaign_todos (
-                partner_id INTEGER,
-                task_name TEXT,
-                status TEXT,
-                updated_at TEXT,
-                PRIMARY KEY (partner_id, task_name)
-            );
-        """)
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Error initializing SQLite todo database: {e}")
-
-
 @tool
 def manage_todo_list(partner_id: int, action: str, task_name: str = None, status: str = None) -> str:
     """Manages the orchestrator's checklist for processing a customer's campaign.
@@ -984,24 +1196,18 @@ def manage_todo_list(partner_id: int, action: str, task_name: str = None, status
     Args:
         partner_id: The Odoo customer ID.
         action: One of 'get' (retrieves checklist), 'add' (adds a task), or 'update' (updates a task's status).
-        task_name: The name of the task/step (e.g. 'check_eligibility', 'check_suppression', 'check_memories', 'check_reactivation', 'check_replies', 'draft_email', 'send_email', 'log_notes').
+        task_name: The name of the task/step.
         status: The new status of the task ('pending' or 'completed').
         
     Returns:
         A string representing the status or list of tasks.
     """
-    init_todo_db()
+    global _todo_cache
     now_str = datetime.now(timezone.utc).isoformat()
     
     try:
-        conn = sqlite3.connect(config.DB_PATH)
-        cursor = conn.cursor()
-        
         if action == 'get':
-            cursor.execute("SELECT task_name, status FROM campaign_todos WHERE partner_id = ?", (partner_id,))
-            rows = cursor.fetchall()
-            
-            # If no tasks exist for this lead, initialize the default campaign sequence tasks
+            rows = _todo_cache.get(partner_id)
             if not rows:
                 default_tasks = [
                     'check_eligibility',
@@ -1013,55 +1219,31 @@ def manage_todo_list(partner_id: int, action: str, task_name: str = None, status
                     'send_email',
                     'log_notes'
                 ]
-                for task in default_tasks:
-                    cursor.execute(
-                        "INSERT OR IGNORE INTO campaign_todos (partner_id, task_name, status, updated_at) VALUES (?, ?, ?, ?)",
-                        (partner_id, task, 'pending', now_str)
-                    )
-                conn.commit()
-                cursor.execute("SELECT task_name, status FROM campaign_todos WHERE partner_id = ?", (partner_id,))
-                rows = cursor.fetchall()
+                rows = {task: 'pending' for task in default_tasks}
+                _todo_cache[partner_id] = rows
             
-            conn.close()
-            
-            # Format checklist output beautifully
-            checklist = [f"- [{ 'x' if r[1] == 'completed' else ' ' }] {r[0]}" for r in rows]
+            checklist = [f"- [{ 'x' if status == 'completed' else ' ' }] {task}" for task, status in rows.items()]
             return "\n".join(checklist)
             
         elif action == 'add':
             if not task_name:
-                conn.close()
                 raise ToolException("Task name is required for action='add'")
-            cursor.execute(
-                "INSERT OR REPLACE INTO campaign_todos (partner_id, task_name, status, updated_at) VALUES (?, ?, ?, ?)",
-                (partner_id, task_name, status or 'pending', now_str)
-            )
-            conn.commit()
-            conn.close()
+            if partner_id not in _todo_cache:
+                _todo_cache[partner_id] = {}
+            _todo_cache[partner_id][task_name] = status or 'pending'
             return f"Task '{task_name}' added successfully."
             
         elif action == 'update':
             if not task_name or not status:
-                conn.close()
                 raise ToolException("Task name and status are required for action='update'")
-            cursor.execute(
-                "UPDATE campaign_todos SET status = ?, updated_at = ? WHERE partner_id = ? AND task_name = ?",
-                (status, now_str, partner_id, task_name)
-            )
-            conn.commit()
-            conn.close()
+            if partner_id not in _todo_cache:
+                _todo_cache[partner_id] = {}
+            _todo_cache[partner_id][task_name] = status
             return f"Task '{task_name}' updated to '{status}'."
             
         else:
-            conn.close()
             raise ToolException(f"Unsupported action: {action}")
             
     except Exception as e:
         print(f"Error in manage_todo_list for partner {partner_id}: {e}")
         raise ToolException(f"Error in manage_todo_list: {e}")
-
-
-
-
-
-

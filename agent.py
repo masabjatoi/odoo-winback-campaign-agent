@@ -5,7 +5,7 @@ import json
 import re
 import time
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from langchain_core.messages import HumanMessage
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.callbacks import BaseCallbackHandler
@@ -43,7 +43,8 @@ from tools import (
     get_salesperson_details,
     save_customer_memory,
     get_customer_memories,
-    manage_todo_list
+    manage_todo_list,
+    clear_todo_list
 )
 
 _llm_instance = None
@@ -409,13 +410,9 @@ def run_agent_for_lead(partner_id: int):
     """Compiles and executes the deep orchestrator agent for a specific lead."""
     # Clear any previous checklist items for this lead to ensure a fresh campaign run
     try:
-        conn = sqlite3.connect(config.DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM campaign_todos WHERE partner_id = ?", (partner_id,))
-        conn.commit()
-        conn.close()
-    except Exception as db_err:
-        print(f"[Warning] Could not clear old checklist for lead {partner_id}: {db_err}")
+        clear_todo_list(partner_id)
+    except Exception as err:
+        print(f"[Warning] Could not clear old checklist for lead {partner_id}: {err}")
 
     orchestrator_prompt = read_playbook("orchestrator_playbook.md")
     copywriter_prompt = read_playbook("copywriter_playbook.md")
@@ -556,74 +553,53 @@ def discovery_node(state) -> dict:
         }
     print(f"[Agent] [Node] Discovery found {len(inactive_customers)} inactive candidate(s) in Odoo.")
 
-    # 2. Open SQLite connection and verify schema
-    conn = sqlite3.connect(config.DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS campaign_leads (
-            partner_id INTEGER PRIMARY KEY,
-            partner_name TEXT,
-            email TEXT,
-            salesperson_id INTEGER,
-            last_order_date TEXT,
-            campaign_stage TEXT,
-            last_email_sent_date TEXT,
-            next_email_date TEXT,
-            status TEXT,
-            is_blacklisted INTEGER DEFAULT 0,
-            suppressed INTEGER DEFAULT 0,
-            suppression_reason TEXT
-        );
-    """)
-    conn.commit()
+    # 2. In TEST_MODE, pre-populate the JSON test state for candidates to avoid slow Odoo calls
+    if config.TEST_MODE:
+        from tools import _read_test_state, _write_test_state
+        state_dict = _read_test_state()
+        modified = False
+        for c in inactive_customers:
+            pid_str = str(c['id'])
+            if pid_str not in state_dict:
+                state_dict[pid_str] = {
+                    'partner_id': c['id'],
+                    'partner_name': c['name'],
+                    'email': c['email'],
+                    'salesperson_id': c['salesperson_id'],
+                    'last_order_date': c['last_order_date'],
+                    'campaign_stage': 'none',
+                    'last_email_sent_date': None,
+                    'next_email_date': datetime.now(timezone.utc).isoformat(),
+                    'status': 'active',
+                    'is_blacklisted': 0,
+                    'suppressed': 0,
+                    'suppression_reason': None
+                }
+                modified = True
+        if modified:
+            _write_test_state(state_dict)
 
-    # Dynamically verify and migrate columns if database already exists
-    cursor.execute("PRAGMA table_info(campaign_leads)")
-    columns = [col[1] for col in cursor.fetchall()]
-    if "is_blacklisted" not in columns:
-        cursor.execute("ALTER TABLE campaign_leads ADD COLUMN is_blacklisted INTEGER DEFAULT 0")
-    if "suppressed" not in columns:
-        cursor.execute("ALTER TABLE campaign_leads ADD COLUMN suppressed INTEGER DEFAULT 0")
-    if "suppression_reason" not in columns:
-        cursor.execute("ALTER TABLE campaign_leads ADD COLUMN suppression_reason TEXT")
-    conn.commit()
+    # 3. Apply runtime limit if set to avoid performing too many state checkups
+    limit = config.get_limit()
+    if limit:
+        inactive_customers = inactive_customers[:limit]
+        print(f"[Agent] [Node] Applied processing limit to discovery: truncated to {len(inactive_customers)} candidate(s).")
 
-    # 3. Enroll new leads
-    enrolled_count = 0
-    now_str = datetime.now(timezone.utc).isoformat()
-
+    # 4. Reconstruct state and build the queue of active leads dynamically
+    active_leads = []
     for c in inactive_customers:
         partner_id = c['id']
         name = c['name']
-        email = c['email']
-        salesperson_id = c['salesperson_id']
-        last_order_date = c['last_order_date']
-
-        cursor.execute("SELECT 1 FROM campaign_leads WHERE partner_id = ?", (partner_id,))
-        if cursor.fetchone() is None:
-            cursor.execute("""
-                INSERT INTO campaign_leads 
-                (partner_id, partner_name, email, salesperson_id, last_order_date, campaign_stage, next_email_date, status)
-                VALUES (?, ?, ?, ?, ?, 'none', ?, 'active')
-            """, (partner_id, name, email, salesperson_id, last_order_date, now_str))
-            enrolled_count += 1
-
-    conn.commit()
-
-    # 4. Fetch all active leads to populate workflow queue
-    cursor.execute("SELECT partner_id, partner_name FROM campaign_leads WHERE status = 'active'")
-    active_leads_rows = cursor.fetchall()
-    conn.close()
-
-    active_leads = [{"partner_id": row[0], "partner_name": row[1]} for row in active_leads_rows]
-    print(f"[Agent] [Node] Enrolled {enrolled_count} new lead(s). Total active queue: {len(active_leads)}")
-
-    # Apply runtime limit if set (via main cli option)
-    limit = config.get_limit()
-    if limit:
-        active_leads = active_leads[:limit]
-        print(f"[Agent] [Node] Applied processing limit: queue truncated to {len(active_leads)} lead(s).")
-
+        
+        lead_state = get_campaign_lead.func(partner_id=partner_id)
+        if lead_state and lead_state.get("status") == "active":
+            active_leads.append({
+                "partner_id": partner_id,
+                "partner_name": name
+            })
+            
+    print(f"[Agent] [Node] Active queue compiled from Odoo/JSON: {len(active_leads)} lead(s)")
+        
     return {
         "leads_to_process": active_leads,
         "processed_leads": []
@@ -770,6 +746,10 @@ def process_lead_node(state) -> dict:
 
         # 6. Check for Reactivation via Purchase
         check_since_date = last_email_sent_date_str if last_email_sent_date_str else lead_state.get("last_order_date")
+        if not check_since_date:
+            # Default to 60 days ago
+            check_since_date = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+            
         new_orders = check_new_orders.invoke({"partner_id": partner_id, "since_date_utc": check_since_date})
         if new_orders:
             order_names = [o.get("name", "Unknown Order") for o in new_orders]
@@ -794,6 +774,10 @@ def process_lead_node(state) -> dict:
 
         # 7. Check for Customer Replies
         reply_since_date = last_email_sent_date_str if last_email_sent_date_str else check_since_date
+        if not reply_since_date:
+            # Default to 30 days ago
+            reply_since_date = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            
         replies = check_customer_replies.invoke({"partner_id": partner_id, "since_date_utc": reply_since_date})
         if replies:
             print(f"  [Reply Detected] Customer replied to outreach. Invoking deep agent to process reply...")
