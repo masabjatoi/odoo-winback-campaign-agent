@@ -42,26 +42,15 @@ A module containing standard, reusable LangChain tool definitions decorated with
 
 ### (Done) 🚀 Main Pipeline Runner: [[main.py](file:///d:/Win-Back%20Agent/main.py)]
 The orchestrating script that runs the discovery loop:
-1. Initializes the local SQLite tracking database (`win_back_agent.db`).
+1. Validates environmental configurations.
 2. Invokes `get_inactive_partners` using the threshold from `.env`.
 3. Writes the structured list of all inactive candidates to [inactive_customers.json](file:///d:/Win-Back%20Agent/inactive_customers.json) (currently found **429 inactive customers**).
-4. Enrolls new candidates into the SQLite database with `status='active'` and `campaign_stage='none'`.
+4. Launches the LangGraph pipeline compiling active leads queue directly.
 
-### (Done) 🗄️ SQLite Tracking Schema (`win_back_agent.db`)
-Tracks the campaign state for each customer locally during testing:
-```sql
-CREATE TABLE IF NOT EXISTS campaign_leads (
-    partner_id INTEGER PRIMARY KEY,
-    partner_name TEXT,
-    email TEXT,
-    salesperson_id INTEGER,
-    last_order_date TEXT,
-    campaign_stage TEXT,       -- 'none', 'email_1_sent', 'email_2_sent', 'email_3_sent'
-    last_email_sent_date TEXT,  -- ISO timestamp (UTC)
-    next_email_date TEXT,       -- ISO timestamp (UTC)
-    status TEXT                 -- 'active', 'reactivated', 'cold', 'opt_out'
-);
-```
+### (Done) 🗄️ JSON Test State Persistence (`campaign_test_state.json`)
+Tracks the campaign state for each customer locally during test execution runs under `TEST_MODE=true` to isolate testing without polluting Odoo chatter:
+- Key-valued by customer Odoo ID.
+- Automatically stores simulated values for: `campaign_stage`, `last_email_sent_date`, `next_email_date`, `status`, and `memories`.
 
 ---
 
@@ -103,8 +92,8 @@ We have successfully migrated the codebase to the **Deep Agents** framework, imp
    * **Function:** Custom-tailors HTML outreach emails, querying historical Odoo purchase categories for Email 2 recommendations.
 
 ### (Done) 🛠️ Comprehensive Agent Tools (tools.py)
-1. **`get_campaign_lead`**: Reads the campaign lead's current stage and status from SQLite.
-2. **`update_campaign_lead`**: Updates the campaign stage and status in SQLite.
+1. **`get_campaign_lead`**: Reads the campaign lead's current stage and status dynamically from Odoo (or from `campaign_test_state.json` under `TEST_MODE`).
+2. **`update_campaign_lead`**: Writes campaign stage and status updates directly to Odoo chatter logs (or to `campaign_test_state.json` under `TEST_MODE`).
 3. **`check_partner_status`**: Verifies if the customer is active and not globally blacklisted in Odoo.
 4. **`check_suppression_criteria`**: Detects if the customer has VIP/No Contact tags or has active CRM negotiations.
 5. **`check_recent_outreach`**: Checks Odoo chatter to prevent sending campaign emails if other emails were sent in the last 7 days.
@@ -124,11 +113,11 @@ To make operations simple and prevent errors, the system isolates test environme
 
 | Feature / Behavior | Testing Environment (`TEST_MODE=true`) | Production Environment (`TEST_MODE=false`) |
 |:---|:---|:---|
-| **Local SQLite State** | Fully active. Tracks lead stages and manages the internal `campaign_todos` checklists. | **Fully active**. Continues to track lead campaign stages and checklist tasks locally. |
+| **Local State Tracking** | Persistent flat JSON file (`campaign_test_state.json`) tracks simulated campaign stages. | **Stateless**. No local files or databases. State is dynamically derived from Odoo. |
 | **Email Outreach** | Outgoing emails are redirected to `TEST_EMAIL_TO` (`jatoimasab@gmail.com`) via developer Gmail SMTP. | Outgoing emails are sent directly to the customer's real email address via Odoo's native `mail.mail` model. |
 | **Odoo Chatter Logs** | Chatter logs are bypassed; notes are printed to the console only. | Notes are posted natively to the customer's chatter feed (`res.partner`) using `message_post`. |
 | **Sales Rep Activities** | Activity creation is bypassed and printed to console only. | Actual `mail.activity` (To-Do) records are created natively in Odoo assigned to the salesperson. |
-| **Semantic Memories** | Written and read from the local SQLite table `customer_memories`. | Written and read from the Odoo native **Internal Notes (`comment`)** field on the customer's `res.partner` record. |
+| **Semantic Memories** | Written and read from local `campaign_test_state.json` memories block. | Written and read from the Odoo native **Internal Notes (`comment`)** field on the customer's `res.partner` record. |
 | **Global Blacklist** | Blacklist creation is bypassed and printed to console only. | Opt-out replies automatically add the customer's email address to Odoo's native global `mail.blacklist` table. |
 
 ---
@@ -137,7 +126,7 @@ To make operations simple and prevent errors, the system isolates test environme
 
 We have successfully implemented persistent semantic memory to record and check customer preferences, objections, or status updates:
 * **Dual-Mode Persistence**:
-  * **Testing Mode (`TEST_MODE=true`):** Memories are written to and retrieved from a local SQLite table `customer_memories` inside `win_back_agent.db`.
+  * **Testing Mode (`TEST_MODE=true`):** Memories are written to and retrieved from the local JSON file `campaign_test_state.json`.
   * **Production Mode (`TEST_MODE=false`):** Memories are appended to and retrieved from Odoo's native **Internal Notes (`comment`)** field on the customer's record (`res.partner`).
 * **Workflow Automation**:
   * **Checking Memory**: Before any re-engagement outreach is drafted or sent, the Orchestrator checks the customer's memories. If a permanent objection (e.g. out of business, closed down, switched to competitor) is found, the campaign is immediately halted, and the lead status is set to `'cold'` or `'opt_out'`.
@@ -189,61 +178,43 @@ We resolved 6 follow-up issues to ensure linter cleanliness, clean Odoo queries,
 
 ---
 
-## 🗄️ 10. SQLite Database Schema & Internal Rationale
+## 🗄️ 10. Dynamic State Tracking & JSON State Schema
 
-To maintain campaign status and avoid double-processing customer contacts, the agent relies on a local SQLite database (`win_back_agent.db`). Below are the detailed table definitions, columns, and their operational purposes:
+To maintain campaign status and avoid double-processing customer contacts without local relational databases, the agent relies on Odoo's native data models (production) and a local flat JSON dictionary (testing):
 
-### A. Table: `campaign_leads`
-Stores the active state and scheduling timeline for each customer campaign.
-* **Schema**:
-  ```sql
-  CREATE TABLE IF NOT EXISTS campaign_leads (
-      partner_id INTEGER PRIMARY KEY,
-      partner_name TEXT,
-      email TEXT,
-      salesperson_id INTEGER,
-      last_order_date TEXT,
-      campaign_stage TEXT,       -- 'none', 'email_1_sent', 'email_2_sent', 'email_3_sent'
-      last_email_sent_date TEXT,  -- ISO UTC datetime string
-      next_email_date TEXT,       -- ISO UTC datetime string
-      status TEXT,                -- 'active', 'reactivated', 'cold', 'opt_out'
-      is_blacklisted INTEGER DEFAULT 0,
-      suppressed INTEGER DEFAULT 0,
-      suppression_reason TEXT
-  );
+### A. Dynamic State Reconstruction (Odoo Production)
+- **chatter logs (`mail.message`)**: Queried to reconstruct prior email outreach dates and templates sent.
+- **Sales Orders (`sale.order`)**: Queried dynamically since the last outreach event to detect Reactivations.
+- **blacklist entries (`mail.blacklist`)**: Checked by email address to detect Opt-Out status.
+- **Internal Notes (`comment`)**: Checked to query semantic memories of customer objections.
+
+### B. Testing State (`campaign_test_state.json`)
+Under `TEST_MODE=true`, the agent maintains campaign states locally in a single structured JSON dictionary:
+- **Keys**: Odoo customer IDs (e.g. `"29199"`).
+- **Structure**:
+  ```json
+  {
+      "partner_id": 29199,
+      "partner_name": "A.V.B. BV (nieuw)",
+      "email": "info@avb-technieken.be",
+      "salesperson_id": 916,
+      "last_order_date": null,
+      "campaign_stage": "none",
+      "last_email_sent_date": null,
+      "next_email_date": "2026-06-22T17:53:29.526970+00:00",
+      "status": "active",
+      "is_blacklisted": 0,
+      "suppressed": 0,
+      "suppression_reason": null,
+      "memories": [
+          {
+              "memory_text": "...",
+              "created_at": "..."
+          }
+      ]
+  }
   ```
-* **Internal Purpose**:
-  - **Interval Scheduling**: Ensures the campaign strictly enforces the 7-day wait interval between emails (`next_email_date`).
-  - **Reactivation Guard**: Ensures that if a customer purchases or replies, they are marked as `reactivated` or `replied` and never receive subsequent automated drip emails.
-
-### B. Table: `campaign_todos`
-Tracks the internal workflow checklist for each customer run.
-* **Schema**:
-  ```sql
-  CREATE TABLE IF NOT EXISTS campaign_todos (
-      partner_id INTEGER,
-      task_name TEXT,
-      status TEXT, -- 'pending', 'completed'
-      updated_at TEXT,
-      PRIMARY KEY (partner_id, task_name)
-  );
-  ```
-* **Internal Purpose**:
-  - **AI Safety & Guidance**: Prevents the orchestrator LLM from skipping any safety tasks (e.g. suppression verification, opt-out reviews, memory objections) before drafting campaign outreach.
-
-### C. Table: `customer_memories`
-Stores local interaction logs and objections during testing.
-* **Schema**:
-  ```sql
-  CREATE TABLE IF NOT EXISTS customer_memories (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      partner_id INTEGER,
-      memory_text TEXT,
-      created_at TEXT
-  );
-  ```
-* **Internal Purpose**:
-  - **Offline Memory Log**: Stores customer objections (such as "business closed") locally while in `TEST_MODE=true` to test the orchestrator's objection-checking flow.
+- **In-Memory Checklists**: Checklist tasks (`campaign_todos`) are tracked using a global process-level dictionary cache (`_todo_cache`) in memory during pipeline execution.
 
 ---
 
@@ -296,13 +267,9 @@ Below are the most critical engineering constraints, gotchas, and details that m
 * **Gotcha**: The HIL review creates `edit_email.json` and checks `approve.txt` in the workspace root.
 * **Rule**: The script will automatically delete `approve.txt` and `edit_email.json` immediately upon consumption or cancel. Do not leave hardcoded files in the directory; let the agent manage creation and deletion to prevent stale inputs.
 
-### 6. SQLite Database Schema Migrations
-* **Gotcha**: Running the agent on a server with an existing `win_back_agent.db` can cause database crashes if new columns (e.g., `is_blacklisted`, `suppressed`, `suppression_reason`) have been added.
-* **Rule**: Always use PRAGMA schema checks and dynamic `ALTER TABLE` statements inside `discovery_node` at startup to migrate the schema safely without data loss.
-
-### 7. Checklist Table Cleared per Run
-* **Gotcha**: If `campaign_todos` records are left marked as `"completed"`, subsequent runs for the customer will skip all verification checks thinking they are already done.
-* **Rule**: `run_agent_for_lead` must run a `DELETE` query on `campaign_todos` for the targeted `partner_id` at the start of every single execution to guarantee a fresh checklist is created.
+### 6. Checklist Cache Reset per Run
+* **Gotcha**: If checklist records are left marked as `"completed"` in-memory, subsequent evaluations for the customer will skip all verification checks thinking they are already done.
+* **Rule**: `run_agent_for_lead` calls `clear_todo_list(partner_id)` at the start of every single execution to guarantee a fresh checklist is created in memory.
 
 
 
