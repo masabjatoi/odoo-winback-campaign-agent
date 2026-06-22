@@ -26,6 +26,7 @@ FINAL_WAIT_DAYS = int(os.getenv('FINAL_WAIT_DAYS', 7))
 
 # Testing Mode
 TEST_MODE = os.getenv('TEST_MODE', 'true').strip().lower() in ('true', '1', 'yes')
+AUTO_APPROVE = os.getenv('AUTO_APPROVE', 'false').strip().lower() in ('true', '1', 'yes')
 GMAIL_SMTP_USER = os.getenv('GMAIL_SMTP_USER', '')
 GMAIL_SMTP_APP_PASSWORD = os.getenv('GMAIL_SMTP_APP_PASSWORD', '')
 TEST_EMAIL_TO = os.getenv('TEST_EMAIL_TO', 'jatoimasab@gmail.com')

@@ -855,7 +855,7 @@ def reconstruct_lead_state_from_odoo(partner_id: int) -> dict:
         models, uid, db, password = get_odoo_client()
         
         # 1. Fetch partner basic info
-        partner_fields = ['name', 'email', 'user_id', 'active']
+        partner_fields = ['name', 'email', 'user_id', 'active', 'lang', 'country_id']
         partner_data = models.execute_kw(db, uid, password, 'res.partner', 'read', [[partner_id]], {'fields': partner_fields})
         if not partner_data:
             return {}
@@ -865,6 +865,9 @@ def reconstruct_lead_state_from_odoo(partner_id: int) -> dict:
         email = p.get('email') or ''
         name = p.get('name') or ''
         active = p.get('active', True)
+        lang = p.get('lang') or 'en_US'
+        country_info = p.get('country_id')
+        country_name = country_info[1] if (country_info and len(country_info) > 1) else None
         
         # Check global blacklist
         is_blacklisted = False
@@ -969,7 +972,9 @@ def reconstruct_lead_state_from_odoo(partner_id: int) -> dict:
             'status': status,
             'is_blacklisted': 1 if is_blacklisted else 0,
             'suppressed': 0,
-            'suppression_reason': None
+            'suppression_reason': None,
+            'lang': lang,
+            'country': country_name
         }
     except Exception as e:
         print(f"Error reconstructing lead state from Odoo for {partner_id}: {e}")
@@ -996,9 +1001,11 @@ def get_campaign_lead(partner_id: int) -> dict:
         
         try:
             models, uid, db, password = get_odoo_client()
-            partner_data = models.execute_kw(db, uid, password, 'res.partner', 'read', [[partner_id]], {'fields': ['name', 'email', 'user_id']})
+            partner_data = models.execute_kw(db, uid, password, 'res.partner', 'read', [[partner_id]], {'fields': ['name', 'email', 'user_id', 'lang', 'country_id']})
             if partner_data:
                 p = partner_data[0]
+                country_info = p.get('country_id')
+                country_name = country_info[1] if (country_info and len(country_info) > 1) else None
                 lead = {
                     'partner_id': partner_id,
                     'partner_name': p.get('name') or '',
@@ -1011,7 +1018,9 @@ def get_campaign_lead(partner_id: int) -> dict:
                     'status': 'active',
                     'is_blacklisted': 0,
                     'suppressed': 0,
-                    'suppression_reason': None
+                    'suppression_reason': None,
+                    'lang': p.get('lang') or 'en_US',
+                    'country': country_name
                 }
                 state_dict[str(partner_id)] = lead
                 _write_test_state(state_dict)

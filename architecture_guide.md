@@ -9,8 +9,8 @@ This document provides a simple, high-level overview of how the Win-Back Sales C
 ```mermaid
 graph TD
     %% Discovery Phase
-    Start([1. Discovery & Enrollment]) --> |Fetch Inactive Customers| SQLiteDB[(SQLite Database)]
-    SQLiteDB --> |Identify Active Leads| Constraints{2. Automated Checks}
+    Start([1. Discovery & Enrollment]) --> |Fetch Inactive Candidates| Candidates{Reconstruct State}
+    Candidates --> |Determine Active Leads| Constraints{2. Automated Checks}
 
     %% Automated Checks Phase
     Constraints -->|Not Due Yet| Skip[Skip Customer]
@@ -29,8 +29,8 @@ graph TD
     HIL -->|Reject| Skip
 
     %% Sending & Output Phase
-    SendEmail --> |Email Sent| UpdateState[6. Update SQLite State]
-    UpdateState --> |Log Chatter Note| OdooChatter[Odoo chatter]
+    SendEmail --> |Email Sent| UpdateState[6. Update State]
+    UpdateState --> |Log Chatter / Native Note| OdooChatter[Odoo CRM / Chatter]
 
     %% Styles
     classDef main fill:#3c3489,stroke:#7b6fed,color:#fff;
@@ -49,7 +49,7 @@ graph TD
 ## Phase Explanations
 
 ### 1. Discovery & Enrollment
-The system automatically queries Odoo once a day to find customers who haven't placed an order in **60+ days**. It saves these leads into the local SQLite database to start tracking their campaign.
+The system queries Odoo to find customers who haven't placed an order in **60+ days**. It dynamically reconstructs each candidate's campaign state (from chatter logs in production, or from a test JSON state file in testing) and enqueues them if they are active in the campaign.
 
 ### 2. Fast Constraint Checks
 Before any heavy AI calculations occur, the system runs through a checklist:
@@ -72,4 +72,5 @@ No emails are sent automatically. The system pauses and presents the email to th
 ### 5. Send & Log (Odoo Integration)
 * **Outreach**: The email is sent to the customer (via Gmail in test mode, or via Odoo in production).
 * **Logging**: A record of the email is written to the customer's Odoo chatter history so the salesperson can see the full communications timeline.
-* **Scheduler**: The next check is scheduled for 7 days in the future.
+* **Scheduler**: The next check is scheduled for 7 days in the future by relying on the chatter log message timestamp.
+

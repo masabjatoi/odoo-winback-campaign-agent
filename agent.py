@@ -205,65 +205,11 @@ def _resolve_send_winback_email_approval(action_args: dict) -> dict:
                 print(f"[Agent] [Warning] Stdin prompt failed: {prompt_err}")
                 is_interactive = False
 
-        approval_file = "approve.txt"
-        edit_file = "edit_email.json"
-        if not is_interactive or choice not in ("A", "E", "W", "R"):
-            print(f"\n[Warning] Stdin is not interactive. Waiting for operator action in '{approval_file}'...")
-            print("Please write one of the following to 'approve.txt' in the project directory:")
-            print("  - 'y' or 'yes' or 'approve' to Approve and Send")
-            print("  - 'n' or 'no' or 'reject' to Reject and Skip")
-            print("  - 'edit' to Edit the email (will read edit_email.json and resume once approved)")
-            print("  - 'rewrite' or 'w' to Rewrite / Regenerate the email")
-
-            if os.path.exists(approval_file):
-                try:
-                    os.remove(approval_file)
-                except Exception:
-                    pass
-
-            start_time = time.time()
-            timeout = 120
-            while True:
-                if time.time() - start_time > timeout:
-                    print(f"[Warning] Operator approval timed out after {timeout} seconds. Auto-rejecting.")
-                    choice = "R"
-                    break
-
-                if os.path.exists(approval_file):
-                    try:
-                        with open(approval_file, "r", encoding="utf-8") as f:
-                            content = f.read().strip().lower()
-                        if content in ("y", "yes", "approve", "a"):
-                            print(f"[HIL] Approved via {approval_file}")
-                            choice = "A"
-                            break
-                        if content in ("n", "no", "reject", "r"):
-                            print(f"[HIL] Rejected via {approval_file}")
-                            choice = "R"
-                            break
-                        if content in ("edit", "e"):
-                            print(f"[HIL] Edit requested via {approval_file}")
-                            choice = "E"
-                            break
-                        if content in ("rewrite", "w"):
-                            print(f"[HIL] Rewrite requested via {approval_file}")
-                            choice = "W"
-                            break
-                        if content in ("back", "b"):
-                            print(f"[HIL] Return to main choices via {approval_file}")
-                            choice = "BACK"
-                            break
-                    except Exception:
-                        pass
-                time.sleep(2)
-
-            if os.path.exists(approval_file):
-                try:
-                    os.remove(approval_file)
-                except Exception:
-                    pass
-
-        if choice == "BACK":
+        if not is_interactive:
+            print("\n[HIL] Stdin is not interactive and AUTO_APPROVE is disabled. Automatically rejecting email draft to avoid blocking.")
+            choice = "R"
+        elif choice not in ("A", "E", "W", "R"):
+            print("Invalid choice. Please enter A, E, W, or R.")
             continue
 
         if choice == "A":
@@ -284,83 +230,37 @@ def _resolve_send_winback_email_approval(action_args: dict) -> dict:
             new_subject = action_args.get("subject")
             new_body = action_args.get("body_html")
 
-            if is_interactive:
+            try:
+                edited_subject = input(f"Subject [{action_args.get('subject')}]: ").strip()
+            except Exception:
+                edited_subject = ""
+            
+            if edited_subject.lower() in ("back", "b", "cancel"):
+                print("Returning to main menu...")
+                continue
+            if edited_subject:
+                new_subject = edited_subject
+
+            print("Enter new HTML body (press Enter on empty line to finish, or type 'back' on a single line to return):")
+            lines = []
+            cancelled = False
+            while True:
                 try:
-                    edited_subject = input(f"Subject [{action_args.get('subject')}]: ").strip()
+                    line = input()
                 except Exception:
-                    edited_subject = ""
-                
-                if edited_subject.lower() in ("back", "b", "cancel"):
-                    print("Returning to main menu...")
-                    continue
-                if edited_subject:
-                    new_subject = edited_subject
-
-                print("Enter new HTML body (press Enter on empty line to finish, or type 'back' on a single line to return):")
-                lines = []
-                cancelled = False
-                while True:
-                    try:
-                        line = input()
-                    except Exception:
-                        break
-                    if line.strip().lower() in ("back", "b", "cancel") and not lines:
-                        cancelled = True
-                        break
-                    if line == "":
-                        break
-                    lines.append(line)
-                
-                if cancelled:
-                    print("Returning to main menu...")
-                    continue
-                if lines:
-                    new_body = "\n".join(lines)
-            else:
-                print(f"[HIL] Waiting for edited subject and body in '{edit_file}'...")
-                print('Format: {"subject": "...", "body_html": "..."}')
-                try:
-                    with open(edit_file, "w", encoding="utf-8") as f:
-                        json.dump(
-                            {"subject": action_args.get("subject"), "body_html": action_args.get("body_html")},
-                            f,
-                            indent=2,
-                        )
-                except Exception:
-                    pass
-
-                print(f"After editing '{edit_file}', please write 'y' / 'yes' to '{approval_file}' to approve, or 'back' to return.")
-                start_edit_time = time.time()
-                cancelled = False
-                while time.time() - start_edit_time < 120:
-                    if os.path.exists(approval_file):
-                        try:
-                            with open(approval_file, "r", encoding="utf-8") as f:
-                                app_content = f.read().strip().lower()
-                            if app_content in ("back", "b"):
-                                cancelled = True
-                                break
-                            if app_content in ("y", "yes", "approve", "a"):
-                                if os.path.exists(edit_file):
-                                    with open(edit_file, "r", encoding="utf-8") as f:
-                                        edit_data = json.load(f)
-                                    new_subject = edit_data.get("subject") or new_subject
-                                    new_body = edit_data.get("body_html") or new_body
-                                break
-                        except Exception:
-                            pass
-                    time.sleep(2)
-
-                for f_path in (edit_file, approval_file):
-                    if os.path.exists(f_path):
-                        try:
-                            os.remove(f_path)
-                        except Exception:
-                            pass
-
-                if cancelled:
-                    print("Returning to main menu...")
-                    continue
+                    break
+                if line.strip().lower() in ("back", "b", "cancel") and not lines:
+                    cancelled = True
+                    break
+                if line == "":
+                    break
+                lines.append(line)
+            
+            if cancelled:
+                print("Returning to main menu...")
+                continue
+            if lines:
+                new_body = "\n".join(lines)
 
             edited_args = dict(action_args)
             edited_args["subject"] = new_subject
@@ -465,7 +365,7 @@ def run_agent_for_lead(partner_id: int):
                 ]
             }
         ],
-        interrupt_on={"send_winback_email": True},
+        interrupt_on=None if config.AUTO_APPROVE else {"send_winback_email": True},
         checkpointer=MemorySaver(),
     )
 

@@ -79,7 +79,7 @@ For the given customer ID, you must execute the following checklist in sequence:
    - If the lead has no new orders and no replies, check if the current time is past `next_email_date`.
    - If current time is NOT past `next_email_date`, do nothing and finish.
    - If current time IS past `next_email_date`:
-     - **Before invoking the email_copywriter subagent in any stage below:** You MUST call `get_company_details` and `get_salesperson_details` (using the `salesperson_id` from the lead's local state) to retrieve the correct company and salesperson info. Pass these details explicitly as context parameters to the `email_copywriter`.
+      - **Before invoking the email_copywriter subagent in any stage below:** You MUST call `get_company_details` and `get_salesperson_details` (using the `salesperson_id` from the lead's local state) to retrieve the correct company and salesperson info. You MUST also retrieve the customer's language preference (`lang`) and country geography (`country`) from the lead's state. Pass all these details explicitly as context parameters to the `email_copywriter`.
      - **If stage is 'none':**
        - Check frequency cap using `check_recent_outreach`. If they received an email from Odoo in the last 7 days, defer sending by setting `next_email_date` to 3 days from now.
        - Otherwise, call `email_copywriter` subagent to draft Email 1 (Friendly Reminder).
