@@ -6,6 +6,8 @@ This document provides a simple, high-level overview of how the Win-Back Sales C
 
 ## High-Level Workflow Diagram
 
+![High-Level Workflow Diagram](architecture_diagram.png)
+
 ```mermaid
 graph TD
     %% Discovery Phase
