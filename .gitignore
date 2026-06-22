@@ -1,0 +1,30 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Databases & local state
+*.db
+*.db-journal
+*.sqlite
+inactive_customers.json
+
+# Local configurations / secrets
+.env
+.env.local
+.env.*
+
+# Human in the Loop (HIL) temporary files
+approve.txt
+edit_email.json
+
+# IDE / Project metadata
+.idea/
+.vscode/
+.gemini/

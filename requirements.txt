@@ -1,0 +1,7 @@
+python-dotenv
+langchain-core
+langgraph
+langchain-google-genai
+langchain-mistralai
+langchain-groq
+deepagents
