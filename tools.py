@@ -335,7 +335,8 @@ def send_winback_email(
     subject: str,
     body_html: str,
     salesperson_name: str = None,
-    salesperson_email: str = None
+    salesperson_email: str = None,
+    campaign_stage_tag: str = None
 ) -> dict:
     """Sends a win-back outreach email to the customer. 
     If TEST_MODE is enabled, bypasses Odoo and routes via Gmail SMTP to the test address.
@@ -348,10 +349,36 @@ def send_winback_email(
         body_html: HTML content of the email body.
         salesperson_name: Salesperson's full name.
         salesperson_email: Salesperson's email address.
+        campaign_stage_tag: Machine-readable tag corresponding to the outreach stage (e.g. 'WB-1', 'WB-2', 'WB-3').
         
     Returns:
         A dictionary indicating success status.
     """
+    # Determine stage tag
+    tag = campaign_stage_tag
+    if not tag:
+        try:
+            if config.TEST_MODE:
+                state_dict = _read_test_state()
+                lead = state_dict.get(str(partner_id))
+            else:
+                lead = reconstruct_lead_state_from_odoo(partner_id)
+            if lead:
+                curr_stage = lead.get("campaign_stage", "none")
+                if curr_stage == "none":
+                    tag = "WB-1"
+                elif curr_stage == "email_1_sent":
+                    tag = "WB-2"
+                elif curr_stage == "email_2_sent":
+                    tag = "WB-3"
+        except Exception as e:
+            print(f"Warning: Failed to derive campaign stage tag: {e}")
+            
+    if tag:
+        tag_str = f"[{tag.upper().strip()}]"
+        if tag_str not in subject:
+            subject = f"{subject} {tag_str}"
+
     if config.TEST_MODE:
         print(f"[TEST MODE] Sending email via Gmail SMTP for partner {partner_id} ({customer_name})...")
         print(f"[TEST MODE] Sender: {config.GMAIL_SMTP_USER} | Recipient: {config.TEST_EMAIL_TO}")
@@ -432,7 +459,7 @@ def log_campaign_note(partner_id: int, message_body: str) -> dict:
         models.execute_kw(
             db, uid, password, 'res.partner', 'message_post',
             [[partner_id]],
-            {'body': message_body, 'message_type': 'comment'}
+            {'body': message_body, 'message_type': 'comment', 'subtype_xmlid': 'mail.mt_note'}
         )
         return {"success": True}
     except Exception as e:
@@ -534,16 +561,12 @@ def get_customer_purchased_categories(partner_id: int) -> list:
     """
     try:
         models, uid, db, password = get_odoo_client()
-        order_ids = models.execute_kw(db, uid, password, 'sale.order', 'search', [[
-            ('partner_id', '=', partner_id),
-            ('state', 'in', ['sale', 'done'])
-        ]])
-        if not order_ids:
+        lines = models.execute_kw(db, uid, password, 'sale.order.line', 'search_read', [[
+            ('order_id.partner_id', '=', partner_id),
+            ('order_id.state', 'in', ['sale', 'done'])
+        ]], {'fields': ['product_id']})
+        if not lines:
             return []
-        
-        lines = models.execute_kw(db, uid, password, 'sale.order.line', 'search_read', [
-            [('order_id', 'in', order_ids)]
-        ], {'fields': ['product_id']})
         
         product_ids = list(set(line['product_id'][0] for line in lines if line.get('product_id')))
         if not product_ids:
@@ -597,7 +620,7 @@ def blacklist_partner_in_odoo(email: str) -> dict:
 
 
 @tool
-def check_recent_outreach(partner_id: int, days_limit: int = 7) -> bool:
+def check_recent_outreach(partner_id: int, days_limit: int = 7) -> dict:
     """Checks Odoo mail.message logs for any outgoing campaign or salesperson emails sent to this customer in the last days_limit days.
     
     Args:
@@ -605,7 +628,7 @@ def check_recent_outreach(partner_id: int, days_limit: int = 7) -> bool:
         days_limit: Number of days to check for recent outreach (default 7).
         
     Returns:
-        True if there was a recent email outreach, False otherwise.
+        A dictionary with keys 'has_recent_outreach' (bool) and 'last_outreach_date' (str or None).
     """
     try:
         models, uid, db, password = get_odoo_client()
@@ -626,6 +649,7 @@ def check_recent_outreach(partner_id: int, days_limit: int = 7) -> bool:
         fields = ['id', 'author_id', 'email_from', 'date']
         messages = models.execute_kw(db, uid, password, 'mail.message', 'search_read', [domain], {'fields': fields})
         
+        newest_date = None
         for msg in messages:
             author_info = msg.get('author_id')
             author_id = author_info[0] if author_info else None
@@ -637,9 +661,13 @@ def check_recent_outreach(partner_id: int, days_limit: int = 7) -> bool:
             if partner_email_lower and partner_email_lower in email_from.lower():
                 continue
             
-            # Found an outreach email sent to the customer
-            return True
-        return False
+            msg_date = msg.get('date')
+            if not newest_date or msg_date > newest_date:
+                newest_date = msg_date
+                
+        if newest_date:
+            return {'has_recent_outreach': True, 'last_outreach_date': newest_date}
+        return {'has_recent_outreach': False, 'last_outreach_date': None}
     except Exception as e:
         print(f"Error checking recent outreach for partner {partner_id}: {e}")
         raise ToolException(f"Error checking recent outreach for partner {partner_id}: {e}")
@@ -763,7 +791,7 @@ def get_salesperson_details(salesperson_id: Any = None, **kwargs) -> dict:
         print(f"Error fetching salesperson details: {e}")
         raise ToolException(f"Error fetching salesperson details: {e}")
 # Local JSON state file for TEST_MODE
-TEST_STATE_FILE = "campaign_test_state.json"
+TEST_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "campaign_test_state.json")
 _todo_cache = {}
 
 def _read_test_state() -> dict:
@@ -776,13 +804,21 @@ def _read_test_state() -> dict:
     return {}
 
 def _write_test_state(state: dict):
+    tmp_file = TEST_STATE_FILE + ".tmp"
     try:
-        with open(TEST_STATE_FILE, "w") as f:
+        with open(tmp_file, "w") as f:
             json.dump(state, f, indent=4)
+        os.replace(tmp_file, TEST_STATE_FILE)
     except Exception as e:
         print(f"Error writing test state to JSON: {e}")
+        if os.path.exists(tmp_file):
+            try:
+                os.remove(tmp_file)
+            except Exception:
+                pass
+
 @tool
-def clear_todo_list(partner_id: int):
+def clear_todo_list(partner_id: int) -> dict:
     """Clears the checklist cache for the given partner ID.
     
     Args:
@@ -791,6 +827,7 @@ def clear_todo_list(partner_id: int):
     global _todo_cache
     if partner_id in _todo_cache:
         del _todo_cache[partner_id]
+    return {"success": True}
 
 def reconstruct_lead_state_from_odoo(partner_id: int) -> dict:
     try:
@@ -847,13 +884,13 @@ def reconstruct_lead_state_from_odoo(partner_id: int) -> dict:
                 
             is_campaign = False
             stage_found = None
-            if "friendly reminder" in subject or "checking in" in subject:
+            if "[wb-1]" in subject or "[wb-1]" in body or "friendly reminder" in subject or "checking in" in subject:
                 is_campaign = True
                 stage_found = 'email_1_sent'
-            elif "welcome10" in body or "value-based" in subject or "special offer" in subject:
+            elif "[wb-2]" in subject or "[wb-2]" in body or "welcome10" in body or "value-based" in subject or "special offer" in subject:
                 is_campaign = True
                 stage_found = 'email_2_sent'
-            elif "final attempt" in subject or "last reminder" in subject or "stop reaching out" in body:
+            elif "[wb-3]" in subject or "[wb-3]" in body or "final attempt" in subject or "last reminder" in subject or "stop reaching out" in body:
                 is_campaign = True
                 stage_found = 'email_3_sent'
                 
@@ -864,7 +901,7 @@ def reconstruct_lead_state_from_odoo(partner_id: int) -> dict:
                 })
         
         # Sort campaign emails by date ascending
-        campaign_emails.sort(key=lambda x: x['date'])
+        campaign_emails.sort(key=lambda x: parse_odoo_date(x['date']))
         
         # Determine campaign stage and dates
         campaign_stage = 'none'

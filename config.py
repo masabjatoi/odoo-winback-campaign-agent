@@ -55,6 +55,13 @@ def validate():
         ("ODOO_USERNAME", ODOO_USERNAME),
         ("ODOO_API_KEY", ODOO_API_KEY),
     ]
+    supported_providers = {'mistral', 'google', 'gemini', 'groq'}
+    if LLM_PROVIDER not in supported_providers:
+        raise ValueError(
+            f"Unsupported LLM_PROVIDER '{LLM_PROVIDER}'. "
+            f"Supported providers are: {', '.join(sorted(supported_providers))}"
+        )
+
     if LLM_PROVIDER == 'mistral':
         required.append(("MISTRAL_API_KEY", MISTRAL_API_KEY))
     elif LLM_PROVIDER in ['google', 'gemini']:

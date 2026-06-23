@@ -84,7 +84,7 @@ For the given customer ID, you must execute the following checklist in sequence:
        - Check frequency cap using `check_recent_outreach`. If they received an email from Odoo in the last 7 days, defer sending by setting `next_email_date` to 3 days from now.
        - Otherwise, call `email_copywriter` subagent to draft Email 1 (Friendly Reminder).
        - Update checklist: `manage_todo_list(action="update", task_name="draft_email", status="completed")`.
-       - Send the email using `send_winback_email`.
+       - Send the email using `send_winback_email(..., campaign_stage_tag="WB-1")`.
        - Update checklist: `manage_todo_list(action="update", task_name="send_email", status="completed")`.
        - Update local state: `campaign_stage='email_1_sent'`, `last_email_sent_date` to current UTC ISO time, `next_email_date` to current time + 7 days, `status='active'`.
        - Log a campaign note in Odoo chatter.
@@ -92,7 +92,7 @@ For the given customer ID, you must execute the following checklist in sequence:
      - **If stage is 'email_1_sent':**
        - Call `email_copywriter` subagent to draft Email 2 (Value-Based Re-engagement with recommended categories).
        - Update checklist: `manage_todo_list(action="update", task_name="draft_email", status="completed")`.
-       - Send the email using `send_winback_email`.
+       - Send the email using `send_winback_email(..., campaign_stage_tag="WB-2")`.
        - Update checklist: `manage_todo_list(action="update", task_name="send_email", status="completed")`.
        - Update local state: `campaign_stage='email_2_sent'`, `last_email_sent_date` to current UTC ISO time, `next_email_date` to current time + 7 days, `status='active'`.
        - Log a campaign note in Odoo chatter.
@@ -100,7 +100,7 @@ For the given customer ID, you must execute the following checklist in sequence:
      - **If stage is 'email_2_sent':**
        - Call `email_copywriter` subagent to draft Email 3 (Final Attempt).
        - Update checklist: `manage_todo_list(action="update", task_name="draft_email", status="completed")`.
-       - Send the email using `send_winback_email`.
+       - Send the email using `send_winback_email(..., campaign_stage_tag="WB-3")`.
        - Update checklist: `manage_todo_list(action="update", task_name="send_email", status="completed")`.
        - Update local state: `campaign_stage='email_3_sent'`, `last_email_sent_date` to current UTC ISO time, `next_email_date` to current time + 7 days (final wait), `status='active'`.
        - Log a campaign note in Odoo chatter.

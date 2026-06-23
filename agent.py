@@ -1,6 +1,5 @@
 import os
 import sys
-import sqlite3
 import json
 import re
 import time
@@ -649,6 +648,7 @@ def process_lead_node(state) -> dict:
 
     print(f"\n[Agent] [Node] Checking constraints for customer: '{partner_name}' (ID: {partner_id})...")
 
+    status_log = {}
     try:
         # 1. Read Local State
         lead_state = get_campaign_lead.invoke({"partner_id": partner_id})
@@ -680,7 +680,29 @@ def process_lead_node(state) -> dict:
             if datetime.now(timezone.utc) >= next_email_date:
                 is_due = True
         else:
-            is_due = True
+            if campaign_stage == "none":
+                is_due = True
+            elif last_email_sent_date_str:
+                last_dt = datetime.fromisoformat(last_email_sent_date_str.replace('Z', '+00:00'))
+                next_email_date = last_dt + timedelta(days=7)
+                if datetime.now(timezone.utc) >= next_email_date:
+                    is_due = True
+            else:
+                print(f"  [Skip] Lead stage is '{campaign_stage}' but next_email_date and last_email_sent_date are missing/invalid in state. Skipping lead to prevent duplicate outreach.")
+                status_log = {
+                    "partner_id": partner_id,
+                    "partner_name": partner_name,
+                    "status": "skipped",
+                    "campaign_status": "active",
+                    "campaign_stage": campaign_stage,
+                    "log": f"Skipped: Missing schedule dates for campaign stage '{campaign_stage}'."
+                }
+                processed.append(status_log)
+                return {
+                    "leads_to_process": queue,
+                    "processed_leads": processed,
+                    "current_lead": current
+                }
 
         if not is_due:
             print(f"  [Skip] Next email date ({next_email_date_str}) is in the future. Not due yet.")
@@ -819,6 +841,35 @@ def process_lead_node(state) -> dict:
                 "campaign_status": status,
                 "campaign_stage": stage,
                 "log": f"Processed reply. Campaign status: {status}, stage: {stage}."
+            }
+            processed.append(status_log)
+            return {
+                "leads_to_process": queue,
+                "processed_leads": processed,
+                "current_lead": current
+            }
+
+        # 8. Check for Recent Outreach (Frequency Cap)
+        recent_outreach_info = check_recent_outreach.invoke({"partner_id": partner_id, "days_limit": 7})
+        if recent_outreach_info.get("has_recent_outreach"):
+            last_date_str = recent_outreach_info.get("last_outreach_date")
+            last_date = datetime.fromisoformat(last_date_str.replace(' ', 'T').replace('Z', '+00:00'))
+            rescheduled_date = last_date + timedelta(days=7)
+            rescheduled_date_str = rescheduled_date.isoformat()
+            
+            update_campaign_lead.invoke({
+                "partner_id": partner_id,
+                "next_email_date": rescheduled_date_str
+            })
+            
+            print(f"  [Skip] Customer had outreach email sent in the last 7 days (on {last_date_str}). Rescheduling next check to {rescheduled_date_str}.")
+            status_log = {
+                "partner_id": partner_id,
+                "partner_name": partner_name,
+                "status": "skipped",
+                "campaign_status": "active",
+                "campaign_stage": campaign_stage,
+                "log": f"Skipped: Frequency cap active. Rescheduled next check to {rescheduled_date_str}."
             }
             processed.append(status_log)
             return {
