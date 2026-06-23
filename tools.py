@@ -389,7 +389,9 @@ def send_winback_email(
             msg = MIMEMultipart()
             msg['From'] = f'"{salesperson_name}" <{config.GMAIL_SMTP_USER}>' if salesperson_name else config.GMAIL_SMTP_USER
             msg['To'] = config.TEST_EMAIL_TO
-            msg['Subject'] = f"[TEST] {subject} (Intended for: {customer_name} <{customer_email}>)"
+            msg['Subject'] = f"[TEST] {subject}"
+            msg['X-Intended-To'] = customer_email
+            msg['X-Intended-For'] = customer_name
             
             # Add footer to denote test mode
             full_body = body_html + f"<br/><br/><hr/><i>[This test email was sent via Gmail SMTP. Intended recipient: {customer_name} &lt;{customer_email}&gt; (Odoo ID: {partner_id})]</i>"
