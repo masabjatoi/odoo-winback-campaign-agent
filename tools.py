@@ -10,6 +10,7 @@ from collections import Counter
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from langchain_core.tools import tool, ToolException
 
 import config
@@ -43,11 +44,26 @@ def parse_odoo_date(date_str: str) -> datetime:
     if not date_str:
         raise ValueError("Date string is empty")
     
-    # Clean up potential timezone representations
-    date_str = date_str.replace('Z', '').replace('T', ' ')
-    # Remove milliseconds if present
-    if '.' in date_str:
-        date_str = date_str.split('.')[0]
+    date_str = date_str.strip()
+    
+    # Normalize Z to +00:00 to support fromisoformat under older Python versions
+    normalized = date_str
+    if normalized.endswith('Z'):
+        normalized = normalized[:-1] + '+00:00'
+    
+    # Try fromisoformat first
+    try:
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except ValueError:
+        pass
+        
+    # If fromisoformat fails, do fallback parsing using formatting rules
+    clean_str = date_str.replace('T', ' ')
+    if '.' in clean_str:
+        clean_str = clean_str.split('.')[0]
         
     formats = [
         '%Y-%m-%d %H:%M:%S',
@@ -58,22 +74,13 @@ def parse_odoo_date(date_str: str) -> datetime:
     
     for fmt in formats:
         try:
-            dt = datetime.strptime(date_str.strip(), fmt)
+            dt = datetime.strptime(clean_str, fmt)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
-            return dt
+            return dt.astimezone(timezone.utc)
         except ValueError:
             continue
             
-    # Try using fromisoformat as a last fallback
-    try:
-        dt = datetime.fromisoformat(date_str)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except ValueError:
-        pass
-        
     raise ValueError(f"Could not parse Odoo date string: {date_str}")
 
 
@@ -140,7 +147,7 @@ def get_inactive_partners(inactivity_threshold_days: int = None) -> list:
         partner_details = models.execute_kw(
             db, uid, password, 'res.partner', 'search_read',
             [[('id', 'in', partner_ids), ('active', '=', True), ('email', '!=', False)]],
-            {'fields': ['id', 'name', 'email', 'user_id']}
+            {'fields': ['id', 'name', 'email', 'user_id', 'lang', 'country_id']}
         )
         
         # Check blacklist status in mail.blacklist for all candidate emails in batch
@@ -169,12 +176,19 @@ def get_inactive_partners(inactivity_threshold_days: int = None) -> list:
                 
             salesperson = p.get('user_id')
             salesperson_id = salesperson[0] if salesperson else None
+            
+            # Safe unwrapping of country_id tuple
+            country_info = p.get('country_id')
+            country_name = country_info[1] if (country_info and len(country_info) > 1) else None
+            
             eligible_partners.append({
                 'id': pid,
                 'name': p.get('name'),
                 'email': p.get('email'),
                 'salesperson_id': salesperson_id,
-                'last_order_date': last_order_map.get(pid)
+                'last_order_date': last_order_map.get(pid),
+                'lang': p.get('lang') or 'en_US',
+                'country': country_name
             })
             
         return eligible_partners
@@ -507,105 +521,6 @@ def schedule_partner_activity(
     except Exception as e:
         print(f"Error scheduling Odoo activity for partner {partner_id}: {e}")
         raise ToolException(f"Error scheduling Odoo activity for partner {partner_id}: {e}")
-
-
-@tool
-def get_campaign_lead(partner_id: int) -> dict:
-    """Retrieves the campaign lead state from the local SQLite database.
-    
-    Args:
-        partner_id: The Odoo customer ID.
-        
-    Returns:
-        A dictionary with the lead's state: partner_id, partner_name, email, salesperson_id,
-        last_order_date, campaign_stage, last_email_sent_date, next_email_date, status.
-    """
-    try:
-        conn = sqlite3.connect(config.DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM campaign_leads WHERE partner_id = ?", (partner_id,))
-        row = cursor.fetchone()
-        conn.close()
-    except sqlite3.Error as e:
-        print(f"Error reading campaign lead {partner_id}: {e}")
-        raise ToolException(f"Error reading campaign lead {partner_id}: {e}")
-        
-    if row:
-        return dict(row)
-    return {}
-
-
-@tool
-def update_campaign_lead(
-    partner_id: int,
-    campaign_stage: str = None,
-    last_email_sent_date: str = None,
-    next_email_date: str = None,
-    status: str = None,
-    is_blacklisted: int = None,
-    suppressed: int = None,
-    suppression_reason: str = None
-) -> dict:
-    """Updates the campaign lead state in the local SQLite database.
-    
-    Args:
-        partner_id: The Odoo customer ID.
-        campaign_stage: The new campaign stage (e.g. 'none', 'email_1_sent', 'email_2_sent', 'email_3_sent').
-        last_email_sent_date: ISO UTC datetime string of the last email sent.
-        next_email_date: ISO UTC datetime string of when the next email can be sent.
-        status: The lead status (e.g. 'active', 'reactivated', 'cold', 'opt_out').
-        is_blacklisted: 1 if blacklisted, 0 otherwise.
-        suppressed: 1 if suppressed, 0 otherwise.
-        suppression_reason: Reason for suppression.
-        
-    Returns:
-        A dictionary indicating success status.
-    """
-    try:
-        conn = sqlite3.connect(config.DB_PATH)
-        cursor = conn.cursor()
-        
-        fields = []
-        params = []
-        if campaign_stage is not None:
-            fields.append("campaign_stage = ?")
-            params.append(campaign_stage)
-        if last_email_sent_date is not None:
-            fields.append("last_email_sent_date = ?")
-            params.append(last_email_sent_date)
-        if next_email_date is not None:
-            fields.append("next_email_date = ?")
-            params.append(next_email_date)
-        if status is not None:
-            fields.append("status = ?")
-            params.append(status)
-        if is_blacklisted is not None:
-            fields.append("is_blacklisted = ?")
-            params.append(is_blacklisted)
-        if suppressed is not None:
-            fields.append("suppressed = ?")
-            params.append(suppressed)
-        if suppression_reason is not None:
-            fields.append("suppression_reason = ?")
-            params.append(suppression_reason)
-            
-        if not fields:
-            conn.close()
-            return {"success": True}
-            
-        params.append(partner_id)
-        query = f"UPDATE campaign_leads SET {', '.join(fields)} WHERE partner_id = ?"
-        cursor.execute(query, params)
-        conn.commit()
-        conn.close()
-        print(f"Successfully updated campaign lead {partner_id} in SQLite: stage={campaign_stage}, status={status}")
-        return {"success": True}
-    except Exception as e:
-        print(f"Error updating campaign lead {partner_id}: {e}")
-        raise ToolException(f"Error updating campaign lead {partner_id}: {e}")
-
-
 @tool
 def get_customer_purchased_categories(partner_id: int) -> list:
     """Queries Odoo to find the product categories historically purchased by the customer,
@@ -797,22 +712,44 @@ def get_company_details() -> dict:
 
 
 @tool
-def get_salesperson_details(salesperson_id: int) -> dict:
+def get_salesperson_details(salesperson_id: Any = None, **kwargs) -> dict:
     """Queries Odoo to retrieve the salesperson's full name and email.
     
     Args:
-        salesperson_id: The Odoo user ID of the salesperson.
+        salesperson_id: The Odoo user ID of the salesperson (optional).
         
     Returns:
         A dictionary with the salesperson's name and email.
     """
     try:
+        # If name or email are passed as kwargs (due to LLM hallucinating args), return them
+        if kwargs and ('name' in kwargs or 'email' in kwargs):
+            return {
+                'name': kwargs.get('name') or 'Sales Representative',
+                'email': kwargs.get('email') or ''
+            }
+            
         if not salesperson_id:
             return {'name': 'Sales Representative', 'email': ''}
+            
+        if isinstance(salesperson_id, dict):
+            return {
+                'name': salesperson_id.get('name') or 'Sales Representative',
+                'email': salesperson_id.get('email') or ''
+            }
+            
+        if isinstance(salesperson_id, list) and salesperson_id:
+            salesperson_id = salesperson_id[0]
+            
+        try:
+            sp_id = int(str(salesperson_id).strip())
+        except (ValueError, TypeError):
+            return {'name': 'Sales Representative', 'email': ''}
+            
         models, uid, db, password = get_odoo_client()
         users = models.execute_kw(
             db, uid, password, 'res.users', 'read',
-            [[salesperson_id]],
+            [[sp_id]],
             {'fields': ['name', 'email']}
         )
         if users:
@@ -844,8 +781,13 @@ def _write_test_state(state: dict):
             json.dump(state, f, indent=4)
     except Exception as e:
         print(f"Error writing test state to JSON: {e}")
-
+@tool
 def clear_todo_list(partner_id: int):
+    """Clears the checklist cache for the given partner ID.
+    
+    Args:
+        partner_id: The Odoo customer ID.
+    """
     global _todo_cache
     if partner_id in _todo_cache:
         del _todo_cache[partner_id]
@@ -1231,7 +1173,7 @@ def manage_todo_list(partner_id: int, action: str, task_name: str = None, status
                 rows = {task: 'pending' for task in default_tasks}
                 _todo_cache[partner_id] = rows
             
-            checklist = [f"- [{ 'x' if status == 'completed' else ' ' }] {task}" for task, status in rows.items()]
+            checklist = [f"- [{ 'x' if s == 'completed' else ' ' }] {task}" for task, s in rows.items()]
             return "\n".join(checklist)
             
         elif action == 'add':

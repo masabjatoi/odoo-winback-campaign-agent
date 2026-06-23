@@ -43,9 +43,8 @@ A module containing standard, reusable LangChain tool definitions decorated with
 ### (Done) 🚀 Main Pipeline Runner: [[main.py](file:///d:/Win-Back%20Agent/main.py)]
 The orchestrating script that runs the discovery loop:
 1. Validates environmental configurations.
-2. Invokes `get_inactive_partners` using the threshold from `.env`.
-3. Writes the structured list of all inactive candidates to [inactive_customers.json](file:///d:/Win-Back%20Agent/inactive_customers.json) (currently found **429 inactive customers**).
-4. Launches the LangGraph pipeline compiling active leads queue directly.
+2. Invokes `get_inactive_partners` using the threshold from `.env` to check inactive candidates.
+3. Launches the LangGraph pipeline compiling the active leads queue.
 
 ### (Done) 🗄️ JSON Test State Persistence (`campaign_test_state.json`)
 Tracks the campaign state for each customer locally during test execution runs under `TEST_MODE=true` to isolate testing without polluting Odoo chatter:

@@ -46,6 +46,89 @@ from tools import (
     manage_todo_list,
     clear_todo_list
 )
+import html
+from html.parser import HTMLParser
+
+
+class HTMLToTextParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.reset()
+        self.fed = []
+        self.ignored_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ('style', 'script', 'head'):
+            self.ignored_depth += 1
+        elif tag in ('p', 'br', 'div', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'):
+            if self.ignored_depth == 0:
+                self.fed.append('\n')
+        elif tag == 'td':
+            if self.ignored_depth == 0:
+                self.fed.append(' ')
+
+    def handle_endtag(self, tag):
+        if tag in ('style', 'script', 'head'):
+            self.ignored_depth = max(0, self.ignored_depth - 1)
+        elif tag in ('p', 'div', 'tr'):
+            if self.ignored_depth == 0:
+                self.fed.append('\n')
+
+    def handle_data(self, d):
+        if self.ignored_depth == 0:
+            self.fed.append(d)
+
+    def get_data(self):
+        text = ''.join(self.fed)
+        text = html.unescape(text)
+        text = re.sub(r'\n\s*\n+', '\n\n', text)
+        return text.strip()
+
+
+def clean_html(html_str: str) -> str:
+    if not html_str:
+        return ""
+    # Strip basic block comments if any
+    html_str = re.sub(r'<!--.*?-->', '', html_str, flags=re.DOTALL)
+    parser = HTMLToTextParser()
+    parser.feed(html_str)
+    return parser.get_data()
+
+
+def get_msg_name(msg) -> str | None:
+    if hasattr(msg, "name"):
+        return msg.name
+    if isinstance(msg, dict):
+        return msg.get("name")
+    return None
+
+
+def get_msg_content(msg) -> str:
+    content = ""
+    if hasattr(msg, "content"):
+        content = msg.content
+    elif isinstance(msg, dict):
+        content = msg.get("content", "")
+    else:
+        content = str(msg)
+
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                if "text" in item:
+                    parts.append(item["text"])
+                elif "type" in item and item["type"] == "text":
+                    parts.append(item.get("text", ""))
+                else:
+                    parts.append(str(item))
+            elif isinstance(item, str):
+                parts.append(item)
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    return str(content)
+
 
 _llm_instance = None
 _lock = threading.Lock()
@@ -66,7 +149,7 @@ def get_llm() -> BaseChatModel:
                     )
                 elif provider in ['google', 'gemini']:
                     _llm_instance = ChatGoogleGenerativeAI(
-                        model="gemini-1.5-flash",
+                        model="gemini-2.0-flash",
                         api_key=config.GEMINI_API_KEY,
                         max_retries=3
                     )
@@ -111,19 +194,56 @@ def invoke_llm_with_retry(runnable, messages, run_config=None, max_retries=5, in
 
 class ToolLoggingCallbackHandler(BaseCallbackHandler):
     """Prints start, end, and error events for all tool executions."""
-    def on_tool_start(self, serialized, input_str, **kwargs):
+    def __init__(self):
+        super().__init__()
+        self._run_tool_names = {}
+
+    def on_tool_start(self, serialized, input_str, *, run_id, **kwargs):
         name = serialized.get("name", "Unknown Tool")
-        safe_args = str(input_str).replace('\r', '').replace('\n', ' ')
-        args_snippet = safe_args[:150] + ("..." if len(safe_args) > 150 else "")
-        print(f"[Agent] [Tool Call] Requesting '{name}' with args: {args_snippet}")
+        self._run_tool_names[run_id] = name
+        
+        # Internal read/state/utility tools to suppress from verbose logging
+        internal_tools = {
+            "get_campaign_lead",
+            "manage_todo_list",
+            "get_company_details",
+            "get_salesperson_details",
+            "check_partner_status",
+            "check_suppression_criteria",
+            "check_new_orders",
+            "check_customer_replies",
+            "get_customer_memories",
+            "clear_todo_list",
+            "get_customer_purchased_categories"
+        }
+        if name in internal_tools:
+            return
+        
+        if name in ("reply_analyst", "email_copywriter"):
+            print(f"[Agent] [Subagent] Invoking subagent '{name}'...")
+        else:
+            print(f"[Agent] [Action] Executing '{name}'...")
 
-    def on_tool_end(self, output, **kwargs):
-        safe_output = str(output).replace('\r', '').replace('\n', ' ')
-        snippet = safe_output[:100] + ("..." if len(safe_output) > 100 else "")
-        print(f"[Agent] [Tool Call] [Success] Returned: {snippet}")
+    def on_tool_end(self, output, *, run_id, **kwargs):
+        name = self._run_tool_names.pop(run_id, None)
+        if name:
+            key_action_tools = {
+                "send_winback_email",
+                "blacklist_partner_in_odoo",
+                "log_campaign_note",
+                "save_customer_memory",
+                "schedule_partner_activity",
+                "update_campaign_lead"
+            }
+            if name in key_action_tools:
+                print(f"[Agent] [Tool Done] '{name}' completed successfully.")
 
-    def on_tool_error(self, error, **kwargs):
-        print(f"[Agent] [Tool Call] [ERROR] {error}")
+    def on_tool_error(self, error, *, run_id, **kwargs):
+        name = self._run_tool_names.pop(run_id, None)
+        if name:
+            print(f"[Agent] [ERROR] Tool '{name}' failed: {error}")
+        else:
+            print(f"[Agent] [ERROR] Tool execution failed: {error}")
 
 
 def read_playbook(filename: str) -> str:
@@ -183,15 +303,16 @@ def _resolve_send_winback_email_approval(action_args: dict) -> dict:
         print(f"Subject:       {action_args.get('subject')}")
         print(f"Salesperson:   {action_args.get('salesperson_name')} <{action_args.get('salesperson_email')}>")
         print("-" * 80)
-        print("EMAIL BODY (HTML):")
+        print("EMAIL BODY:")
         body_html = action_args.get("body_html", "")
+        body_text = clean_html(body_html)
         try:
-            print(body_html)
+            print(body_text)
         except UnicodeEncodeError:
-            print(body_html.encode("ascii", errors="replace").decode("ascii"))
+            print(body_text.encode("ascii", errors="replace").decode("ascii"))
         print("=" * 80)
 
-        is_interactive = sys.stdin and sys.stdin.isatty()
+        is_interactive = sys.stdin is not None
         choice = ""
 
         if is_interactive:
@@ -310,7 +431,7 @@ def run_agent_for_lead(partner_id: int):
     """Compiles and executes the deep orchestrator agent for a specific lead."""
     # Clear any previous checklist items for this lead to ensure a fresh campaign run
     try:
-        clear_todo_list(partner_id)
+        clear_todo_list.invoke({"partner_id": partner_id})
     except Exception as err:
         print(f"[Warning] Could not clear old checklist for lead {partner_id}: {err}")
 
@@ -404,22 +525,26 @@ def run_agent_for_lead(partner_id: int):
                     if any(ignored in node_name for ignored in ignored_nodes):
                         continue
 
-                    print(f"\n[Agent] >>> Entered Node: '{node_name}'")
                     if not isinstance(node_update, dict):
                         continue
                     if "messages" in node_update and node_update["messages"]:
                         latest_msg = node_update["messages"][-1]
-                        if hasattr(latest_msg, "content") and latest_msg.content:
-                            content = latest_msg.content.strip()
-                            if content:
-                                # Suppress duplicate printing of draft emails in the response log
-                                if ("<p>" in content or "<html>" in content) and ("Subject:" in content or "regards" in content.lower()):
-                                    print(f"[Agent] [Response from {node_name}]: (Email draft generated. Pending operator approval...)")
-                                    continue
+                        msg_name = get_msg_name(latest_msg)
+                        msg_content = get_msg_content(latest_msg).strip()
+                        
+                        if msg_content:
+                            if node_name == "model":
                                 try:
-                                    print(f"[Agent] [Response from {node_name}]:\n{content}\n")
+                                    print(f"[Agent] [Orchestrator]:\n{msg_content}\n")
                                 except UnicodeEncodeError:
-                                    print(f"[Agent] [Response from {node_name}]:\n{content.encode('ascii', errors='replace').decode('ascii')}\n")
+                                    print(f"[Agent] [Orchestrator]:\n{msg_content.encode('ascii', errors='replace').decode('ascii')}\n")
+                            elif msg_name == "reply_analyst":
+                                try:
+                                    print(f"[Agent] [Analysis] Reply Analyst Report:\n{msg_content}\n")
+                                except UnicodeEncodeError:
+                                    print(f"[Agent] [Analysis] Reply Analyst Report:\n{msg_content.encode('ascii', errors='replace').decode('ascii')}\n")
+                            elif msg_name == "email_copywriter":
+                                print(f"[Agent] [Copywriter] Email draft generated. Pending operator approval.\n")
             if not interrupted:
                 break
         except Exception as e:
@@ -443,7 +568,7 @@ def discovery_node(state) -> dict:
     
     # 1. Fetch candidates using Odoo inactivity threshold
     try:
-        inactive_customers = get_inactive_partners.func(inactivity_threshold_days=None)
+        inactive_customers = get_inactive_partners.invoke({})
     except Exception as e:
         print(f"[Agent] [Node] [ERROR] Discovery failed: {e}")
         # Gracefully handle the error and avoid crashing the pipeline
@@ -473,7 +598,9 @@ def discovery_node(state) -> dict:
                     'status': 'active',
                     'is_blacklisted': 0,
                     'suppressed': 0,
-                    'suppression_reason': None
+                    'suppression_reason': None,
+                    'lang': c.get('lang', 'en_US'),
+                    'country': c.get('country')
                 }
                 modified = True
         if modified:
@@ -491,7 +618,7 @@ def discovery_node(state) -> dict:
         partner_id = c['id']
         name = c['name']
         
-        lead_state = get_campaign_lead.func(partner_id=partner_id)
+        lead_state = get_campaign_lead.invoke({"partner_id": partner_id})
         if lead_state and lead_state.get("status") == "active":
             active_leads.append({
                 "partner_id": partner_id,
