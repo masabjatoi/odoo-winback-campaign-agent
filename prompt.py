@@ -28,7 +28,7 @@ Provide a summary block highlighting the overall results.
 Generate a clean Markdown table detailing each processed lead:
 | Lead ID | Customer Name | Campaign Stage | Local Status | Execution Log / Action Taken |
 | :--- | :--- | :--- | :--- | :--- |
-| [ID] | [Name] | [Stage (e.g., email_1_sent)] | [Status (e.g., active, reactivated, cold, opt_out)] | [Details on what the node executed] |
+| [ID] | [Name] | [Stage (e.g., No Email Sent, Email 1 Sent)] | [Status (e.g., Draft (Review Pending), Running, Replied / Completed, Cold (No Response))] | [Details on what the node executed] |
 
 ## 3. Checklist & Task Progression Tracker
 Based on the execution logs, summarize which standard checklist stages were processed or bypassed:
@@ -50,4 +50,3 @@ Provide actionable next steps for the B2B sales system operator based on today's
 ---
 *Note: Ensure all tables and bullet points are properly aligned and formatted. Do not include template variables in the final output.*
 """
-

@@ -1,9 +1,10 @@
 import os
 import xmlrpc.client
-import sqlite3
 import smtplib
 import socket
 import json
+import re
+from html import escape
 # Set default socket timeout of 90 seconds to prevent XML-RPC calls from hanging indefinitely
 socket.setdefaulttimeout(90)
 from collections import Counter
@@ -12,31 +13,165 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from langchain_core.tools import tool, ToolException
-
 import config
+from odoo_client import OdooClient
 
-# Odoo XML-RPC connection caching with TTL (1 hour)
-_cached_uid = None
-_cached_uid_time = None
-CACHE_TTL_SECONDS = 3600
+client = OdooClient()
 
 def get_odoo_client():
-    """Connects to Odoo and returns (models_proxy, uid, db, password), caching uid to optimize overhead."""
-    global _cached_uid, _cached_uid_time
-    now = datetime.now(timezone.utc)
-    if (_cached_uid is None or _cached_uid_time is None or 
-        (now - _cached_uid_time).total_seconds() > CACHE_TTL_SECONDS):
-        try:
-            common = xmlrpc.client.ServerProxy(f'{config.ODOO_URL}/xmlrpc/2/common')
-            _cached_uid = common.authenticate(config.ODOO_DB, config.ODOO_USERNAME, config.ODOO_API_KEY, {})
-            _cached_uid_time = now
-        except Exception as auth_err:
-            _cached_uid = None
-            _cached_uid_time = None
-            raise ToolException(f"Odoo authentication failed: {auth_err}")
-            
-    models = xmlrpc.client.ServerProxy(f'{config.ODOO_URL}/xmlrpc/2/object')
-    return models, _cached_uid, config.ODOO_DB, config.ODOO_API_KEY
+    """Connects to Odoo and returns (models_proxy, uid, db, password), leveraging the robust OdooClient."""
+    try:
+        if not client._uid:
+            client.authenticate()
+        return client, client._uid, config.ODOO_DB, config.ODOO_API_KEY
+    except Exception as auth_err:
+        raise ToolException(f"Odoo connection failed: {auth_err}")
+
+_config_loaded = False
+
+from html.parser import HTMLParser
+
+class ChatterHTMLParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.reset()
+        self.fed = []
+        self.ignored_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ('style', 'script', 'head'):
+            self.ignored_depth += 1
+        elif tag in ('p', 'br', 'div', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'):
+            if self.ignored_depth == 0:
+                self.fed.append('\n')
+        elif tag == 'td':
+            if self.ignored_depth == 0:
+                self.fed.append(' ')
+
+    def handle_endtag(self, tag):
+        if tag in ('style', 'script', 'head'):
+            self.ignored_depth = max(0, self.ignored_depth - 1)
+        elif tag in ('p', 'div', 'tr'):
+            if self.ignored_depth == 0:
+                self.fed.append('\n')
+
+    def handle_data(self, d):
+        if self.ignored_depth == 0:
+            self.fed.append(d)
+
+    def get_data(self):
+        text = ''.join(self.fed)
+        import html as std_html
+        text = std_html.unescape(text)
+        import re
+        text = re.sub(r'\n\s*\n+', '\n\n', text)
+        return text.strip()
+
+def clean_html_for_chatter(html_str: str) -> str:
+    if not html_str:
+        return ""
+    import re
+    # Strip basic block comments if any
+    html_str = re.sub(r'<!--.*?-->', '', html_str, flags=re.DOTALL)
+    parser = ChatterHTMLParser()
+    parser.feed(html_str)
+    plain_text = parser.get_data()
+    
+    # Reconstruct with clean p tags and br for spacing
+    paragraphs = [p.strip() for p in plain_text.split('\n\n') if p.strip()]
+    chatter_paragraphs = []
+    for p in paragraphs:
+        import html as std_html
+        formatted_p = std_html.escape(p).replace('\n', '<br/>')
+        chatter_paragraphs.append(f"<p>{formatted_p}</p>")
+    return "\n".join(chatter_paragraphs)
+
+def normalize_email_body_html(body_html: str) -> str:
+    """Convert body-only draft content into clean paragraph HTML for Odoo's mail wrapper."""
+    if not body_html:
+        return ""
+
+    cleaned = re.sub(r'<!--.*?-->', '', body_html, flags=re.DOTALL).strip()
+    cleaned = re.sub(r'</?(?:html|head|body)[^>]*>', '', cleaned, flags=re.IGNORECASE).strip()
+    has_block_html = bool(re.search(r'<\s*(p|div|br|ul|ol|li|table|h[1-6])\b', cleaned, flags=re.IGNORECASE))
+
+    if has_block_html:
+        cleaned = re.sub(r'<p\b([^>]*)>\s*', r'<p\1>', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\s*</p>', '</p>', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'(</p>|<br\s*/?>)\s*(?=<p\b)', r'\1\n', cleaned, flags=re.IGNORECASE)
+        return cleaned.strip()
+
+    paragraphs = [p.strip() for p in re.split(r'\n\s*\n+', cleaned) if p.strip()]
+    if not paragraphs:
+        paragraphs = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    return "\n".join(f"<p>{escape(p).replace(chr(10), '<br/>')}</p>" for p in paragraphs)
+
+def load_odoo_company_config():
+    """
+    Fetches configurations from Odoo dynamically and updates config module parameters.
+    Only runs once per python process lifetime to avoid redundant Odoo calls.
+    """
+    global _config_loaded
+    if _config_loaded:
+        return
+        
+    try:
+        models, uid, db, password = get_odoo_client()
+        
+        # First, fetch current user's active company ID
+        user_data = models.execute_kw(db, uid, password, 'res.users', 'read', [[uid]], {'fields': ['company_id']})
+        if not user_data or not user_data[0].get('company_id'):
+            raise RuntimeError("Could not retrieve active company ID for current user.")
+        company_id = user_data[0]['company_id'][0]
+        print(f"[Odoo Config] Active Company ID: {company_id}")
+
+        # Dynamically verify which custom lisa_wb_ fields exist on res.company
+        fields_to_read = ['name', 'email', 'phone']
+        lisa_fields = models.execute_kw(db, uid, password, 'ir.model.fields', 'search_read', [
+            [('model', '=', 'res.company'), ('name', 'in', [
+                'lisa_wb_inactivity_threshold_days',
+                'lisa_wb_interval_days',
+                'lisa_wb_offer_email2',
+                'lisa_wb_max_emails',
+                'lisa_wb_segment_by_category',
+                'lisa_wb_auto_reply',
+                'lisa_wb_recipient_override'
+            ])]
+        ], {'fields': ['name']})
+        fields_to_read.extend([f['name'] for f in lisa_fields])
+
+        records = models.execute_kw(
+            db, uid, password, 'res.company', 'read', [[company_id]],
+            {'fields': fields_to_read}
+        )
+        if records:
+            company_config = records[0]
+            if 'lisa_wb_inactivity_threshold_days' in company_config:
+                config.INACTIVITY_THRESHOLD_DAYS = int(company_config['lisa_wb_inactivity_threshold_days'])
+            if 'lisa_wb_interval_days' in company_config:
+                config.WINBACK_INTERVAL_DAYS = int(company_config['lisa_wb_interval_days'])
+            if 'lisa_wb_offer_email2' in company_config:
+                config.WINBACK_OFFER_EMAIL2 = company_config['lisa_wb_offer_email2'] or ''
+            if 'lisa_wb_max_emails' in company_config:
+                config.MAX_WINBACK_EMAILS = int(company_config['lisa_wb_max_emails'])
+            if 'lisa_wb_segment_by_category' in company_config:
+                config.SEGMENT_BY_CATEGORY = bool(company_config['lisa_wb_segment_by_category'])
+            if 'lisa_wb_auto_reply' in company_config:
+                config.AUTO_REPLY = bool(company_config['lisa_wb_auto_reply'])
+                config.AUTO_APPROVE = config.AUTO_REPLY
+            if 'lisa_wb_recipient_override' in company_config:
+                config.RECIPIENT_OVERRIDE = (company_config['lisa_wb_recipient_override'] or '').strip()
+            print(f"[Odoo Config] Dynamically loaded from Odoo: "
+                  f"INACTIVITY_THRESHOLD_DAYS={config.INACTIVITY_THRESHOLD_DAYS}, "
+                  f"WINBACK_INTERVAL_DAYS={config.WINBACK_INTERVAL_DAYS}, "
+                  f"WINBACK_OFFER_EMAIL2={config.WINBACK_OFFER_EMAIL2}, "
+                  f"MAX_WINBACK_EMAILS={config.MAX_WINBACK_EMAILS}, "
+                  f"SEGMENT_BY_CATEGORY={config.SEGMENT_BY_CATEGORY}, "
+                  f"AUTO_REPLY={config.AUTO_REPLY}, "
+                  f"RECIPIENT_OVERRIDE={config.RECIPIENT_OVERRIDE or 'None'} [{'ACTIVE' if config.RECIPIENT_OVERRIDE else 'DISABLED'}]")
+            _config_loaded = True
+    except Exception as e:
+        print(f"[Odoo Config] [Warning] Failed to load dynamic config from Odoo: {e}. Using local config defaults.")
 
 
 def parse_odoo_date(date_str: str) -> datetime:
@@ -105,6 +240,7 @@ def get_inactive_partners(inactivity_threshold_days: int = None) -> list:
     Returns:
         A list of dictionaries with partner details: id, name, email, salesperson_id, last_order_date.
     """
+    load_odoo_company_config()
     if inactivity_threshold_days is None:
         inactivity_threshold_days = config.INACTIVITY_THRESHOLD_DAYS
     try:
@@ -191,6 +327,17 @@ def get_inactive_partners(inactivity_threshold_days: int = None) -> list:
                 'country': country_name
             })
             
+        # Filter by category if segment_by_category is True
+        if config.SEGMENT_BY_CATEGORY:
+            filtered_partners = []
+            for p in eligible_partners:
+                cats = get_customer_purchased_categories.invoke({"partner_id": p['id']})
+                if cats:
+                    filtered_partners.append(p)
+                else:
+                    print(f"[Tools] Skipping partner {p['id']} ({p['name']}) because they have no purchase category history and segment_by_category is enabled.")
+            eligible_partners = filtered_partners
+
         return eligible_partners
         
     except Exception as e:
@@ -339,7 +486,6 @@ def send_winback_email(
     campaign_stage_tag: str = None
 ) -> dict:
     """Sends a win-back outreach email to the customer. 
-    If TEST_MODE is enabled, bypasses Odoo and routes via Gmail SMTP to the test address.
     
     Args:
         partner_id: The Odoo customer ID.
@@ -358,11 +504,7 @@ def send_winback_email(
     tag = campaign_stage_tag
     if not tag:
         try:
-            if config.TEST_MODE:
-                state_dict = _read_test_state()
-                lead = state_dict.get(str(partner_id))
-            else:
-                lead = reconstruct_lead_state_from_odoo(partner_id)
+            lead = reconstruct_lead_state_from_odoo(partner_id)
             if lead:
                 curr_stage = lead.get("campaign_stage", "none")
                 if curr_stage == "none":
@@ -379,71 +521,132 @@ def send_winback_email(
         if tag_str not in subject:
             subject = f"{subject} {tag_str}"
 
-    if config.TEST_MODE:
-        print(f"[TEST MODE] Sending email via Gmail SMTP for partner {partner_id} ({customer_name})...")
-        print(f"[TEST MODE] Sender: {config.GMAIL_SMTP_USER} | Recipient: {config.TEST_EMAIL_TO}")
+    # Production mode - Write/send via Odoo mail template and custom fields
+    try:
+        load_odoo_company_config()
+        models, uid, db, password = get_odoo_client()
         
-        server = None
-        try:
-            # Construct email
-            msg = MIMEMultipart()
-            msg['From'] = f'"{salesperson_name}" <{config.GMAIL_SMTP_USER}>' if salesperson_name else config.GMAIL_SMTP_USER
-            msg['To'] = config.TEST_EMAIL_TO
-            msg['Subject'] = f"[TEST] {subject}"
-            msg['X-Intended-To'] = customer_email
-            msg['X-Intended-For'] = customer_name
-            
-            # Add footer to denote test mode
-            full_body = body_html + f"<br/><br/><hr/><i>[This test email was sent via Gmail SMTP. Intended recipient: {customer_name} &lt;{customer_email}&gt; (Odoo ID: {partner_id})]</i>"
-            msg.attach(MIMEText(full_body, 'html'))
-            
-            # Connect and send
-            server = smtplib.SMTP('smtp.gmail.com', 587)
-            server.starttls()
-            server.login(config.GMAIL_SMTP_USER, config.GMAIL_SMTP_APP_PASSWORD)
-            server.send_message(msg)
-            
-            print(f"[TEST MODE] Email successfully sent to {config.TEST_EMAIL_TO}")
-            return {"success": True}
-        except Exception as e:
-            print(f"[TEST MODE] Failed to send Gmail SMTP email: {e}")
-            raise ToolException(f"[TEST MODE] Failed to send Gmail SMTP email: {e}")
-        finally:
-            if server is not None:
-                try:
-                    server.quit()
-                except Exception:
-                    pass
-    else:
-        # Production mode - Write/send via Odoo mail.mail
-        try:
-            models, uid, db, password = get_odoo_client()
-            
-            # Format sender email
-            email_from = config.ODOO_USERNAME
-            if salesperson_name and salesperson_email:
-                email_from = f'"{salesperson_name}" <{salesperson_email}>'
-                
-            vals = {
-                'email_to': customer_email,
-                'email_from': email_from,
-                'subject': subject,
-                'body': body_html,
+        sent_to = config.RECIPIENT_OVERRIDE if config.RECIPIENT_OVERRIDE else customer_email
+        email_body_html = normalize_email_body_html(body_html)
+        audit_footer = (
+            f"<p style='color:#888;font-size:11px;font-family:sans-serif;'>"
+            f"[AUDIT REDIRECT] Intended recipient: {escape(customer_name)} &lt;{escape(customer_email)}&gt;"
+            f"</p>"
+        )
+        sent_body_html = f"{email_body_html}\n{audit_footer}" if config.RECIPIENT_OVERRIDE else email_body_html
+
+        # Step 1: Write HTML content to res.partner.x_lisa_wb_email_html
+        processed_val = bool(config.AUTO_REPLY)
+        partner_vals = {
+            'x_lisa_wb_email_html': sent_body_html if config.AUTO_REPLY else email_body_html,
+            'lisa_wb_processed': processed_val
+        }
+        partner_fields = models.execute_kw(
+            db, uid, password, 'res.partner', 'fields_get',
+            [], {'attributes': ['string']}
+        )
+        if 'x_lisa_wb_email_subject' in partner_fields:
+            partner_vals['x_lisa_wb_email_subject'] = subject
+        models.execute_kw(db, uid, password, 'res.partner', 'write', [[int(partner_id)], partner_vals])
+        print(f"[Tools] Wrote win-back HTML draft to partner {partner_id} (Processed: {processed_val})")
+
+        # Removed redundant winback.campaign creation logic to prevent duplicate records.
+        # The update_campaign_lead tool handles this step exclusively.
+
+        # Helper: post a clean note to chatter via direct mail.message create (bypasses XML-RPC HTML escaping)
+        def _post_wb_chatter(body_html: str):
+            subtypes = models.execute_kw(db, uid, password, 'mail.message.subtype', 'search_read', [
+                [('name', '=', 'Note')]
+            ], {'fields': ['id'], 'limit': 1})
+            subtype_id = subtypes[0]['id'] if subtypes else None
+            models.execute_kw(db, uid, password, 'mail.message', 'create', [{
                 'model': 'res.partner',
-                'res_id': partner_id,
-            }
-            mail_id = models.execute_kw(db, uid, password, 'mail.mail', 'create', [vals])
-            models.execute_kw(db, uid, password, 'mail.mail', 'send', [[mail_id]])
-            print(f"Odoo email sent successfully. Mail ID: {mail_id}")
-            return {"success": True}
-        except Exception as e:
-            print(f"Error sending email via Odoo mail.mail: {e}")
-            raise ToolException(f"Error sending email via Odoo mail.mail: {e}")
+                'res_id': int(partner_id),
+                'body': body_html,
+                'message_type': 'comment',
+                'subtype_id': subtype_id
+            }])
+
+        # Step 2: If auto_reply is True, trigger the Odoo mail template to send immediately
+        if config.AUTO_REPLY:
+            search_name = 'Lisa Win-Back Campaign Outreach'
+            templates = models.execute_kw(db, uid, password, 'mail.template', 'search_read', [
+                [('name', '=', search_name)]
+            ], {'fields': ['id'], 'limit': 1})
+            
+            if not templates:
+                raise ToolException(f"Error: Mail template '{search_name}' not found in Odoo.")
+            template_id_val = templates[0]['id']
+            
+            email_values = {}
+            if config.RECIPIENT_OVERRIDE:
+                email_values.update({
+                    'email_to': config.RECIPIENT_OVERRIDE,
+                    'subject': f"{subject} [To: {customer_email}]",
+                    'partner_ids': [(6, 0, [])],
+                    'recipient_ids': [(6, 0, [])]
+                })
+            else:
+                email_values['subject'] = subject
+            
+            if salesperson_name and salesperson_email:
+                email_values['email_from'] = f'"{salesperson_name}" <{salesperson_email}>'
+
+            # Send email using template
+            try:
+                models.execute_kw(db, uid, password, 'mail.template', 'send_mail',
+                    [template_id_val, int(partner_id)],
+                    {'force_send': True, 'email_values': email_values}
+                )
+            except Exception as send_err:
+                if 'cannot marshal None' in str(send_err):
+                    print('[Tools] Email triggered (ignored None-marshalling fault)')
+                else:
+                    raise send_err
+            print(f"[Tools] Email sent automatically via template for partner {partner_id} (Sent to {sent_to})")
+
+            # Determine stage number (1, 2, or 3) from campaign_stage_tag or derived tag
+            stage_num = "1"
+            if tag:
+                tag_upper = tag.upper().strip()
+                if "WB-2" in tag_upper or "WB2" in tag_upper:
+                    stage_num = "2"
+                elif "WB-3" in tag_upper or "WB3" in tag_upper:
+                    stage_num = "3"
+                elif "WB-1" in tag_upper or "WB1" in tag_upper:
+                    stage_num = "1"
+
+            # Chatter confirmation post removed by request to keep chatter feed clean
+            pass
+
+        else:
+            # AUTO_REPLY=OFF — Manual Review mode
+            # Determine stage number (1, 2, or 3) from campaign_stage_tag or derived tag
+            stage_num = "1"
+            if tag:
+                tag_upper = tag.upper().strip()
+                if "WB-2" in tag_upper or "WB2" in tag_upper:
+                    stage_num = "2"
+                elif "WB-3" in tag_upper or "WB3" in tag_upper:
+                    stage_num = "3"
+                elif "WB-1" in tag_upper or "WB1" in tag_upper:
+                    stage_num = "1"
+
+            # Chatter draft post removed by request to keep chatter feed clean
+            print(f"[Tools] Draft compiled and saved for partner {partner_id}.")
+
+        return {
+            "success": True,
+            "sent": bool(config.AUTO_REPLY),
+            "message": "Email sent automatically via template." if config.AUTO_REPLY else "Email draft saved on customer record for manual review."
+        }
+    except Exception as e:
+        print(f"Error sending email via Odoo: {e}")
+        raise ToolException(f"Error sending email via Odoo: {e}")
 
 @tool
 def log_campaign_note(partner_id: int, message_body: str) -> dict:
     """Logs a campaign note/comment on the customer's chatter log in Odoo.
-    If TEST_MODE is enabled, prints to console and bypasses Odoo writes.
     
     Args:
         partner_id: The Odoo customer ID.
@@ -452,17 +655,20 @@ def log_campaign_note(partner_id: int, message_body: str) -> dict:
     Returns:
         A dictionary indicating success status.
     """
-    if config.TEST_MODE:
-        print(f"[TEST MODE] Would log Odoo chatter note on Partner {partner_id}:")
-        print(f"            {message_body}")
-        return {"success": True}
     try:
         models, uid, db, password = get_odoo_client()
-        models.execute_kw(
-            db, uid, password, 'res.partner', 'message_post',
-            [[partner_id]],
-            {'body': message_body, 'message_type': 'comment', 'subtype_xmlid': 'mail.mt_note'}
-        )
+        subtypes = models.execute_kw(db, uid, password, 'mail.message.subtype', 'search_read', [
+            [('name', '=', 'Note')]
+        ], {'fields': ['id'], 'limit': 1})
+        subtype_id = subtypes[0]['id'] if subtypes else None
+
+        models.execute_kw(db, uid, password, 'mail.message', 'create', [{
+            'model': 'res.partner',
+            'res_id': int(partner_id),
+            'body': message_body,
+            'message_type': 'comment',
+            'subtype_id': subtype_id
+        }])
         return {"success": True}
     except Exception as e:
         print(f"Error logging chatter note for partner {partner_id}: {e}")
@@ -477,7 +683,6 @@ def schedule_partner_activity(
     days_to_deadline: int = 1
 ) -> dict:
     """Schedules a To-Do activity on the customer record in Odoo.
-    If TEST_MODE is enabled, prints to console and bypasses Odoo writes.
     
     Args:
         partner_id: The Odoo customer ID.
@@ -489,13 +694,6 @@ def schedule_partner_activity(
     Returns:
         A dictionary indicating success status.
     """
-    if config.TEST_MODE:
-        print(f"[TEST MODE] Would schedule Odoo activity on Partner {partner_id}:")
-        print(f"            Summary: {summary}")
-        print(f"            Assigned to: {assigned_user_id}")
-        print(f"            Deadline offset: {days_to_deadline} days")
-        print(f"            Note: {note_html}")
-        return {"success": True}
     try:
         models, uid, db, password = get_odoo_client()
         
@@ -596,7 +794,6 @@ def get_customer_purchased_categories(partner_id: int) -> list:
 @tool
 def blacklist_partner_in_odoo(email: str) -> dict:
     """Adds the given email to Odoo's global email blacklist.
-    If TEST_MODE is enabled, prints to console and bypasses Odoo writes.
     
     Args:
         email: The email address to blacklist.
@@ -604,9 +801,6 @@ def blacklist_partner_in_odoo(email: str) -> dict:
     Returns:
         A dictionary indicating success status.
     """
-    if config.TEST_MODE:
-        print(f"[TEST MODE] Would add email to Odoo global blacklist: {email}")
-        return {"success": True}
     try:
         models, uid, db, password = get_odoo_client()
         exists = models.execute_kw(db, uid, password, 'mail.blacklist', 'search', [[('email', '=', email)]])
@@ -675,6 +869,8 @@ def check_recent_outreach(partner_id: int, days_limit: int = 7) -> dict:
         raise ToolException(f"Error checking recent outreach for partner {partner_id}: {e}")
 
 
+_crm_lead_model_exists = None
+
 @tool
 def check_suppression_criteria(partner_id: int) -> dict:
     """Checks if the customer should be suppressed from the win-back campaign (e.g. VIP tag, or active CRM opportunity).
@@ -700,11 +896,23 @@ def check_suppression_criteria(partner_id: int) -> dict:
                         return {'suppressed': True, 'reason': f"Customer has tag: {t.get('name')}"}
                          
         # 2. Check for active CRM opportunities
-        opps = models.execute_kw(db, uid, password, 'crm.lead', 'search_read', [
-            [('partner_id', '=', partner_id), ('type', '=', 'opportunity'), ('active', '=', True), ('probability', '>', 0), ('probability', '<', 100)]
-        ], {'fields': ['name', 'probability']})
-        if opps:
-            return {'suppressed': True, 'reason': f"Active CRM opportunity: {opps[0]['name']} (Probability: {opps[0]['probability']}%)"}
+        global _crm_lead_model_exists
+        if _crm_lead_model_exists is None:
+            try:
+                model_ids = models.execute_kw(db, uid, password, 'ir.model', 'search', [[('model', '=', 'crm.lead')]])
+                _crm_lead_model_exists = bool(model_ids)
+            except Exception:
+                _crm_lead_model_exists = False
+
+        if _crm_lead_model_exists:
+            try:
+                opps = models.execute_kw(db, uid, password, 'crm.lead', 'search_read', [
+                    [('partner_id', '=', partner_id), ('type', '=', 'opportunity'), ('active', '=', True), ('probability', '>', 0), ('probability', '<', 100)]
+                ], {'fields': ['name', 'probability']})
+                if opps:
+                    return {'suppressed': True, 'reason': f"Active CRM opportunity: {opps[0]['name']} (Probability: {opps[0]['probability']}%)"}
+            except Exception as crm_err:
+                print(f"[Tools] Warning: crm.lead model not accessible: {crm_err}. Skipping active opportunities check.")
             
         return {'suppressed': False, 'reason': ''}
     except Exception as e:
@@ -742,21 +950,23 @@ def get_company_details() -> dict:
 
 
 @tool
-def get_salesperson_details(salesperson_id: Any = None, **kwargs) -> dict:
+def get_salesperson_details(salesperson_id: Any = None, name: Any = None, email: Any = None) -> dict:
     """Queries Odoo to retrieve the salesperson's full name and email.
     
     Args:
         salesperson_id: The Odoo user ID of the salesperson (optional).
+        name: The name of the salesperson (optional fallback).
+        email: The email of the salesperson (optional fallback).
         
     Returns:
         A dictionary with the salesperson's name and email.
     """
     try:
-        # If name or email are passed as kwargs (due to LLM hallucinating args), return them
-        if kwargs and ('name' in kwargs or 'email' in kwargs):
+        # If name or email are passed (due to LLM hallucinating args), return them
+        if name or email:
             return {
-                'name': kwargs.get('name') or 'Sales Representative',
-                'email': kwargs.get('email') or ''
+                'name': name or 'Sales Representative',
+                'email': email or ''
             }
             
         if not salesperson_id:
@@ -780,44 +990,30 @@ def get_salesperson_details(salesperson_id: Any = None, **kwargs) -> dict:
         users = models.execute_kw(
             db, uid, password, 'res.users', 'read',
             [[sp_id]],
-            {'fields': ['name', 'email']}
+            {'fields': ['partner_id']}
         )
-        if users:
-            u = users[0]
-            return {
-                'name': u.get('name') or 'Sales Representative',
-                'email': u.get('email') or ''
-            }
-        return {'name': 'Sales Representative', 'email': ''}
+        if users and users[0].get('partner_id'):
+            p_id = users[0]['partner_id'][0]
+            partner_records = models.execute_kw(
+                db, uid, password, 'res.partner', 'read',
+                [[p_id]],
+                {'fields': ['name', 'email', 'phone']}
+            )
+            if partner_records:
+                p_rec = partner_records[0]
+                name = p_rec.get('name') or 'Sales Representative'
+                if "," in name:
+                    name = name.split(",")[-1].strip()
+                return {
+                    'name': name,
+                    'email': p_rec.get('email') or '',
+                    'phone': p_rec.get('phone') or ''
+                }
+        return {'name': 'Sales Representative', 'email': '', 'phone': ''}
     except Exception as e:
         print(f"Error fetching salesperson details: {e}")
         raise ToolException(f"Error fetching salesperson details: {e}")
-# Local JSON state file for TEST_MODE
-TEST_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "campaign_test_state.json")
 _todo_cache = {}
-
-def _read_test_state() -> dict:
-    if os.path.exists(TEST_STATE_FILE):
-        try:
-            with open(TEST_STATE_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
-
-def _write_test_state(state: dict):
-    tmp_file = TEST_STATE_FILE + ".tmp"
-    try:
-        with open(tmp_file, "w") as f:
-            json.dump(state, f, indent=4)
-        os.replace(tmp_file, TEST_STATE_FILE)
-    except Exception as e:
-        print(f"Error writing test state to JSON: {e}")
-        if os.path.exists(tmp_file):
-            try:
-                os.remove(tmp_file)
-            except Exception:
-                pass
 
 @tool
 def clear_todo_list(partner_id: int) -> dict:
@@ -837,6 +1033,14 @@ def reconstruct_lead_state_from_odoo(partner_id: int) -> dict:
         
         # 1. Fetch partner basic info
         partner_fields = ['name', 'email', 'user_id', 'active', 'lang', 'country_id']
+        try:
+            res_partner_fields = models.execute_kw(db, uid, password, 'res.partner', 'fields_get', [], {'attributes': []})
+            if 'x_lisa_wb_email_html' in res_partner_fields:
+                partner_fields.append('x_lisa_wb_email_html')
+            if 'lisa_wb_processed' in res_partner_fields:
+                partner_fields.append('lisa_wb_processed')
+        except Exception:
+            pass
         partner_data = models.execute_kw(db, uid, password, 'res.partner', 'read', [[partner_id]], {'fields': partner_fields})
         if not partner_data:
             return {}
@@ -865,64 +1069,58 @@ def reconstruct_lead_state_from_odoo(partner_id: int) -> dict:
         orders = models.execute_kw(db, uid, password, 'sale.order', 'search_read', [order_domain], {'fields': ['date_order'], 'limit': 1, 'order': 'date_order desc'})
         last_order_date = orders[0].get('date_order') if orders else None
         
-        # 3. Fetch Odoo chatter messages to identify campaign emails
-        message_domain = [
-            ('model', '=', 'res.partner'),
-            ('res_id', '=', partner_id),
-            ('message_type', '=', 'email')
-        ]
-        messages = models.execute_kw(db, uid, password, 'mail.message', 'search_read', [message_domain], {'fields': ['subject', 'body', 'date', 'author_id']})
+        # 3. Retrieve campaign details directly from the Odoo winback.campaign model
+        try:
+            campaign_records = models.execute_kw(db, uid, password, 'winback.campaign', 'search_read', [
+                [('partner_id', '=', partner_id)]
+            ], {'fields': ['stage', 'status', 'suppression_reason', 'email_1_sent_date', 'email_2_sent_date', 'email_3_sent_date'], 'limit': 1})
+        except Exception as e:
+            print(f"[Tools] Warning: winback.campaign model not accessible: {e}. Defaulting to empty campaign state.")
+            campaign_records = []
         
-        # Count sent campaign emails
-        campaign_emails = []
-        for msg in messages:
-            subject = (msg.get('subject') or '').lower()
-            body = (msg.get('body') or '').lower()
-            
-            author_info = msg.get('author_id')
-            author_id = author_info[0] if author_info else None
-            if author_id == partner_id:
-                continue
-                
-            is_campaign = False
-            stage_found = None
-            if "[wb-1]" in subject or "[wb-1]" in body or "friendly reminder" in subject or "checking in" in subject:
-                is_campaign = True
-                stage_found = 'email_1_sent'
-            elif "[wb-2]" in subject or "[wb-2]" in body or "welcome10" in body or "value-based" in subject or "special offer" in subject:
-                is_campaign = True
-                stage_found = 'email_2_sent'
-            elif "[wb-3]" in subject or "[wb-3]" in body or "final attempt" in subject or "last reminder" in subject or "stop reaching out" in body:
-                is_campaign = True
-                stage_found = 'email_3_sent'
-                
-            if is_campaign:
-                campaign_emails.append({
-                    'stage': stage_found,
-                    'date': msg.get('date')
-                })
-        
-        # Sort campaign emails by date ascending
-        campaign_emails.sort(key=lambda x: parse_odoo_date(x['date']))
-        
-        # Determine campaign stage and dates
         campaign_stage = 'none'
+        status = 'active'
+        suppression_reason = None
         last_email_sent_date = None
         next_email_date = None
-        status = 'active'
         
-        if campaign_emails:
-            last_email = campaign_emails[-1]
-            campaign_stage = last_email['stage']
-            last_email_sent_date = last_email['date']
+        if campaign_records:
+            rec = campaign_records[0]
+            campaign_stage = rec.get('stage') or 'none'
+            status = rec.get('status') or 'active'
+            suppression_reason = rec.get('suppression_reason')
             
-            last_dt = parse_odoo_date(last_email_sent_date)
-            next_dt = last_dt + timedelta(days=7)
-            next_email_date = next_dt.isoformat()
-            
-            if campaign_stage == 'email_3_sent' and datetime.now(timezone.utc) >= next_dt:
-                status = 'cold'
-        
+            # Find the most recent sent date
+            sent_dates = []
+            for field in ['email_1_sent_date', 'email_2_sent_date', 'email_3_sent_date']:
+                val = rec.get(field)
+                if val:
+                    try:
+                        sent_dates.append(parse_odoo_date(val))
+                    except Exception:
+                        pass
+            if sent_dates:
+                # Get the latest datetime
+                latest_dt = max(sent_dates)
+                last_email_sent_date = latest_dt.isoformat()
+                
+                # Calculate next email date
+                load_odoo_company_config()
+                interval = getattr(config, 'WINBACK_INTERVAL_DAYS', 7)
+                next_dt = latest_dt + timedelta(days=interval)
+                next_email_date = next_dt.isoformat()
+                
+                max_emails = getattr(config, 'MAX_WINBACK_EMAILS', 3)
+                stage_to_index = {
+                    'email_1_sent': 1,
+                    'email_2_sent': 2,
+                    'email_3_sent': 3,
+                }
+                curr_index = stage_to_index.get(campaign_stage, 0)
+                if curr_index >= max_emails and datetime.now(timezone.utc) >= next_dt:
+                    status = 'cold'
+                    
+        # 4. Fallback checks
         if is_blacklisted:
             status = 'opt_out'
         elif not active:
@@ -931,16 +1129,21 @@ def reconstruct_lead_state_from_odoo(partner_id: int) -> dict:
         # Check reactivated: new confirmed order since last_email_sent_date (or campaign enrollment)
         since_date = last_email_sent_date if last_email_sent_date else last_order_date
         if since_date:
+            odoo_since_date = format_date_for_odoo(since_date)
             new_order_domain = [
                 ('partner_id', '=', partner_id),
                 ('state', 'in', ['sale', 'done']),
-                ('date_order', '>', since_date)
+                ('date_order', '>', odoo_since_date)
             ]
             new_orders_count = models.execute_kw(db, uid, password, 'sale.order', 'search_count', [new_order_domain])
             if new_orders_count > 0:
                 status = 'reactivated'
                 campaign_stage = 'none'
                 
+        has_pending_draft = False
+        if p.get('x_lisa_wb_email_html') and not p.get('lisa_wb_processed'):
+            has_pending_draft = True
+
         return {
             'partner_id': partner_id,
             'partner_name': name,
@@ -952,10 +1155,11 @@ def reconstruct_lead_state_from_odoo(partner_id: int) -> dict:
             'next_email_date': next_email_date,
             'status': status,
             'is_blacklisted': 1 if is_blacklisted else 0,
-            'suppressed': 0,
-            'suppression_reason': None,
+            'suppressed': 1 if status == 'suppressed' else 0,
+            'suppression_reason': suppression_reason,
             'lang': lang,
-            'country': country_name
+            'country': country_name,
+            'has_pending_draft': has_pending_draft
         }
     except Exception as e:
         print(f"Error reconstructing lead state from Odoo for {partner_id}: {e}")
@@ -965,8 +1169,6 @@ def reconstruct_lead_state_from_odoo(partner_id: int) -> dict:
 @tool
 def get_campaign_lead(partner_id: int) -> dict:
     """Retrieves the campaign lead state.
-    In TEST_MODE, reads from local JSON state.
-    In production mode, dynamically reconstructs the state from Odoo.
     
     Args:
         partner_id: The Odoo customer ID.
@@ -974,43 +1176,7 @@ def get_campaign_lead(partner_id: int) -> dict:
     Returns:
         A dictionary with the lead's state.
     """
-    if config.TEST_MODE:
-        state_dict = _read_test_state()
-        lead = state_dict.get(str(partner_id))
-        if lead:
-            return lead
-        
-        try:
-            models, uid, db, password = get_odoo_client()
-            partner_data = models.execute_kw(db, uid, password, 'res.partner', 'read', [[partner_id]], {'fields': ['name', 'email', 'user_id', 'lang', 'country_id']})
-            if partner_data:
-                p = partner_data[0]
-                country_info = p.get('country_id')
-                country_name = country_info[1] if (country_info and len(country_info) > 1) else None
-                lead = {
-                    'partner_id': partner_id,
-                    'partner_name': p.get('name') or '',
-                    'email': p.get('email') or '',
-                    'salesperson_id': p.get('user_id')[0] if p.get('user_id') else None,
-                    'last_order_date': None,
-                    'campaign_stage': 'none',
-                    'last_email_sent_date': None,
-                    'next_email_date': datetime.now(timezone.utc).isoformat(),
-                    'status': 'active',
-                    'is_blacklisted': 0,
-                    'suppressed': 0,
-                    'suppression_reason': None,
-                    'lang': p.get('lang') or 'en_US',
-                    'country': country_name
-                }
-                state_dict[str(partner_id)] = lead
-                _write_test_state(state_dict)
-                return lead
-        except Exception:
-            pass
-        return {}
-    else:
-        return reconstruct_lead_state_from_odoo(partner_id)
+    return reconstruct_lead_state_from_odoo(partner_id)
 
 
 @tool
@@ -1024,9 +1190,7 @@ def update_campaign_lead(
     suppressed: int = None,
     suppression_reason: str = None
 ) -> dict:
-    """Updates the campaign lead state.
-    In TEST_MODE, writes to local JSON state.
-    In production mode, updates Odoo or relies on Odoo chatter to dynamically derive state.
+    """Updates the campaign lead state natively in Odoo's winback.campaign model.
     
     Args:
         partner_id: The Odoo customer ID.
@@ -1041,50 +1205,77 @@ def update_campaign_lead(
     Returns:
         A dictionary indicating success status.
     """
-    if config.TEST_MODE:
-        state_dict = _read_test_state()
-        lead = state_dict.get(str(partner_id)) or {}
-        lead['partner_id'] = partner_id
-        if campaign_stage is not None:
-            lead['campaign_stage'] = campaign_stage
-        if last_email_sent_date is not None:
-            lead['last_email_sent_date'] = last_email_sent_date
-        if next_email_date is not None:
-            lead['next_email_date'] = next_email_date
-        if status is not None:
-            lead['status'] = status
-        if is_blacklisted is not None:
-            lead['is_blacklisted'] = is_blacklisted
-        if suppressed is not None:
-            lead['suppressed'] = suppressed
-        if suppression_reason is not None:
-            lead['suppression_reason'] = suppression_reason
+    try:
+        models, uid, db, password = get_odoo_client()
+        
+        # 1. Log update note to customer chatter (disabled to avoid chatter clutter)
+        # log_msg = []
+        # if campaign_stage:
+        #     log_msg.append(f"Campaign Stage updated to: {campaign_stage}")
+        # if status:
+        #     log_msg.append(f"Campaign Status updated to: {status}")
+        # if suppression_reason:
+        #     log_msg.append(f"Suppression Reason: {suppression_reason}")
+        #     
+        # if log_msg:
+        #     try:
+        #         log_campaign_note.invoke({"partner_id": partner_id, "message_body": f"<b>Win-Back Update:</b><br/>" + "<br/>".join(log_msg)})
+        #     except Exception as e:
+        #         print(f"Error logging state update note in Odoo: {e}")
+
+        # 2. Write updates directly to Odoo winback.campaign model
+        try:
+            existing = models.execute_kw(db, uid, password, 'winback.campaign', 'search_read', [
+                [('partner_id', '=', int(partner_id))]
+            ], {'fields': ['id'], 'limit': 1})
             
-        state_dict[str(partner_id)] = lead
-        _write_test_state(state_dict)
-        return {"success": True}
-    else:
-        log_msg = []
-        if campaign_stage:
-            log_msg.append(f"Campaign Stage updated to: {campaign_stage}")
-        if status:
-            log_msg.append(f"Campaign Status updated to: {status}")
-        if suppression_reason:
-            log_msg.append(f"Suppression Reason: {suppression_reason}")
+            vals = {}
+            if campaign_stage is not None:
+                vals['stage'] = campaign_stage
             
-        if log_msg:
-            try:
-                log_campaign_note.invoke({"partner_id": partner_id, "message_body": f"<b>Win-Back Update:</b><br/>" + "<br/>".join(log_msg)})
-            except Exception as e:
-                print(f"Error logging state update note in Odoo: {e}")
+            # Sync date fields if last_email_sent_date is passed
+            if last_email_sent_date and config.AUTO_REPLY:
+                odoo_date = format_date_for_odoo(last_email_sent_date)
+                if campaign_stage == 'email_1_sent':
+                    vals['email_1_sent_date'] = odoo_date
+                elif campaign_stage == 'email_2_sent':
+                    vals['email_2_sent_date'] = odoo_date
+                elif campaign_stage == 'email_3_sent':
+                    vals['email_3_sent_date'] = odoo_date
+            
+            if status is not None:
+                vals['status'] = status
+                
+            if suppression_reason is not None:
+                vals['suppression_reason'] = suppression_reason
+                
+            if vals or not existing:
+                if existing:
+                    if vals:
+                        models.execute_kw(db, uid, password, 'winback.campaign', 'write', [
+                            [existing[0]['id']], vals
+                        ])
+                        print(f"[Tools] winback.campaign record updated in Odoo for partner {partner_id}")
+                else:
+                    vals['partner_id'] = int(partner_id)
+                    if 'stage' not in vals or not vals['stage']:
+                        vals['stage'] = 'none'
+                    if 'status' not in vals or not vals['status']:
+                        vals['status'] = 'draft' if not config.AUTO_REPLY else 'active'
+                    models.execute_kw(db, uid, password, 'winback.campaign', 'create', [vals])
+                    print(f"[Tools] winback.campaign record created in Odoo for partner {partner_id}")
+        except Exception as e:
+            print(f"[Tools] Warning: Could not sync campaign state back to winback.campaign model: {e}")
+            
         return {"success": True}
+    except Exception as e:
+        print(f"Error updating campaign lead state in Odoo: {e}")
+        raise ToolException(f"Error updating campaign lead state in Odoo: {e}")
 
 
 @tool
 def save_customer_memory(partner_id: int, memory_text: str) -> dict:
-    """Saves a new memory/interaction note for the customer to persistent memory.
-    In TEST_MODE (true), saves to a local JSON state.
-    In production mode (false), appends the note directly to Odoo's res.partner internal notes (comment field).
+    """Saves a new memory/interaction note for the customer to persistent memory in Odoo's res.partner internal notes.
     
     Args:
         partner_id: The Odoo customer ID.
@@ -1094,55 +1285,38 @@ def save_customer_memory(partner_id: int, memory_text: str) -> dict:
         A dictionary indicating success status.
     """
     now_str = datetime.now(timezone.utc).isoformat()
-    
-    if config.TEST_MODE:
-        state_dict = _read_test_state()
-        lead = state_dict.get(str(partner_id)) or {}
-        memories = lead.get('memories') or []
-        memories.append({
-            'memory_text': memory_text,
-            'created_at': now_str
-        })
-        lead['memories'] = memories
-        state_dict[str(partner_id)] = lead
-        _write_test_state(state_dict)
-        print(f"[TEST MODE] Memory saved locally in JSON for partner {partner_id}: {memory_text}")
+    formatted_note = f"\n- {now_str[:10]}: {memory_text}"
+    try:
+        models, uid, db, password = get_odoo_client()
+        records = models.execute_kw(
+            db, uid, password, 'res.partner', 'read',
+            [[partner_id]],
+            {'fields': ['comment']}
+        )
+        existing_comment = ""
+        if records and records[0].get('comment'):
+            existing_comment = records[0]['comment']
+            
+        header = "[Win-Back Memory Log]"
+        if header not in existing_comment:
+            new_comment = f"{existing_comment}\n\n{header}{formatted_note}".strip()
+        else:
+            new_comment = f"{existing_comment}{formatted_note}".strip()
+            
+        models.execute_kw(
+            db, uid, password, 'res.partner', 'write',
+            [[partner_id], {'comment': new_comment}]
+        )
+        print(f"Memory saved natively in Odoo for partner {partner_id}: {memory_text}")
         return {"success": True}
-    else:
-        formatted_note = f"\n- {now_str[:10]}: {memory_text}"
-        try:
-            models, uid, db, password = get_odoo_client()
-            records = models.execute_kw(
-                db, uid, password, 'res.partner', 'read',
-                [[partner_id]],
-                {'fields': ['comment']}
-            )
-            existing_comment = ""
-            if records and records[0].get('comment'):
-                existing_comment = records[0]['comment']
-                
-            header = "[Win-Back Memory Log]"
-            if header not in existing_comment:
-                new_comment = f"{existing_comment}\n\n{header}{formatted_note}".strip()
-            else:
-                new_comment = f"{existing_comment}{formatted_note}".strip()
-                
-            models.execute_kw(
-                db, uid, password, 'res.partner', 'write',
-                [[partner_id], {'comment': new_comment}]
-            )
-            print(f"Memory saved natively in Odoo for partner {partner_id}: {memory_text}")
-            return {"success": True}
-        except Exception as e:
-            print(f"Error saving Odoo native memory for partner {partner_id}: {e}")
-            raise ToolException(f"Error saving Odoo native memory for partner {partner_id}: {e}")
+    except Exception as e:
+        print(f"Error saving Odoo native memory for partner {partner_id}: {e}")
+        raise ToolException(f"Error saving Odoo native memory for partner {partner_id}: {e}")
 
 
 @tool
 def get_customer_memories(partner_id: int) -> str:
-    """Retrieves all past memory logs and notes for the customer.
-    In TEST_MODE (true), reads from the local JSON state.
-    In production mode (false), reads from Odoo's res.partner internal notes (comment field).
+    """Retrieves all past memory logs and notes for the customer from Odoo's res.partner internal notes.
     
     Args:
         partner_id: The Odoo customer ID.
@@ -1150,33 +1324,24 @@ def get_customer_memories(partner_id: int) -> str:
     Returns:
         A string containing all past memory logs.
     """
-    if config.TEST_MODE:
-        state_dict = _read_test_state()
-        lead = state_dict.get(str(partner_id)) or {}
-        memories = lead.get('memories') or []
-        if not memories:
+    try:
+        models, uid, db, password = get_odoo_client()
+        records = models.execute_kw(
+            db, uid, password, 'res.partner', 'read',
+            [[partner_id]],
+            {'fields': ['comment']}
+        )
+        if records and records[0].get('comment'):
+            comment_text = records[0]['comment']
+            header = "[Win-Back Memory Log]"
+            if header in comment_text:
+                parts = comment_text.split(header)
+                return header + parts[-1]
             return ""
-        logs = [f"- {row['created_at'][:10]}: {row['memory_text']}" for row in memories]
-        return "[Win-Back Memory Log]\n" + "\n".join(logs)
-    else:
-        try:
-            models, uid, db, password = get_odoo_client()
-            records = models.execute_kw(
-                db, uid, password, 'res.partner', 'read',
-                [[partner_id]],
-                {'fields': ['comment']}
-            )
-            if records and records[0].get('comment'):
-                comment_text = records[0]['comment']
-                header = "[Win-Back Memory Log]"
-                if header in comment_text:
-                    parts = comment_text.split(header)
-                    return header + parts[-1]
-                return ""
-            return ""
-        except Exception as e:
-            print(f"Error reading Odoo native memory for partner {partner_id}: {e}")
-            raise ToolException(f"Error reading Odoo native memory for partner {partner_id}: {e}")
+        return ""
+    except Exception as e:
+        print(f"Error reading Odoo native memory for partner {partner_id}: {e}")
+        raise ToolException(f"Error reading Odoo native memory for partner {partner_id}: {e}")
 
 
 @tool

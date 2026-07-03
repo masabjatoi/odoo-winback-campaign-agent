@@ -48,6 +48,36 @@ from tools import (
 import html
 from html.parser import HTMLParser
 
+STAGE_LABELS = {
+    'none': 'No Email Sent',
+    'email_1_sent': 'Email 1 Sent',
+    'email_2_sent': 'Email 2 Sent',
+    'email_3_sent': 'Email 3 Sent',
+    'replied': 'Replied',
+    'reactivated': 'Reactivated',
+    'cold': 'Cold',
+    'opt_out': 'Opt Out'
+}
+
+STATUS_LABELS = {
+    'not_enrolled': 'Not Enrolled',
+    'draft': 'Draft (Review Pending)',
+    'active': 'Running',
+    'completed': 'Replied / Completed',
+    'suppressed': 'Suppressed (Skipped)',
+    'failed': 'Failed',
+    'reactivated': 'Reactivated (Success)',
+    'cold': 'Cold (No Response)',
+    'opt_out': 'Opt Out (Unsubscribed)'
+}
+
+def format_stage(val):
+    return STAGE_LABELS.get(val, val)
+
+def format_status(val):
+    return STATUS_LABELS.get(val, val)
+
+
 
 class HTMLToTextParser(HTMLParser):
     def __init__(self):
@@ -311,7 +341,7 @@ def _resolve_send_winback_email_approval(action_args: dict) -> dict:
             print(body_text.encode("ascii", errors="replace").decode("ascii"))
         print("=" * 80)
 
-        is_interactive = sys.stdin is not None
+        is_interactive = sys.stdin is not None and sys.stdin.isatty()
         choice = ""
 
         if is_interactive:
@@ -485,7 +515,7 @@ def run_agent_for_lead(partner_id: int):
                 ]
             }
         ],
-        interrupt_on=None if config.AUTO_APPROVE else {"send_winback_email": True},
+        interrupt_on={"send_winback_email": True} if config.AUTO_REPLY and not getattr(config, 'AUTO_APPROVE', False) else None,
         checkpointer=MemorySaver(),
     )
 
@@ -496,7 +526,20 @@ def run_agent_for_lead(partner_id: int):
 
     # Execute the agent graph with streaming updates and interactive HIL
     now_str = datetime.now(timezone.utc).isoformat()
-    inputs = {"messages": [HumanMessage(content=f"Process the win-back campaign for customer Odoo ID {partner_id}. Current UTC date/time is {now_str}.")]}
+    from tools import load_odoo_company_config
+    load_odoo_company_config()
+    promo_code = config.WINBACK_OFFER_EMAIL2 or ""
+    inputs = {
+        "messages": [
+            HumanMessage(
+                content=(
+                    f"Process the win-back campaign for customer Odoo ID {partner_id}. "
+                    f"Current UTC date/time is {now_str}. "
+                    f"Campaign settings: Win-back Offer Promo Code = '{promo_code}'."
+                )
+            )
+        ]
+    }
     
     current_input = inputs
     response = None
@@ -577,34 +620,6 @@ def discovery_node(state) -> dict:
         }
     print(f"[Agent] [Node] Discovery found {len(inactive_customers)} inactive candidate(s) in Odoo.")
 
-    # 2. In TEST_MODE, pre-populate the JSON test state for candidates to avoid slow Odoo calls
-    if config.TEST_MODE:
-        from tools import _read_test_state, _write_test_state
-        state_dict = _read_test_state()
-        modified = False
-        for c in inactive_customers:
-            pid_str = str(c['id'])
-            if pid_str not in state_dict:
-                state_dict[pid_str] = {
-                    'partner_id': c['id'],
-                    'partner_name': c['name'],
-                    'email': c['email'],
-                    'salesperson_id': c['salesperson_id'],
-                    'last_order_date': c['last_order_date'],
-                    'campaign_stage': 'none',
-                    'last_email_sent_date': None,
-                    'next_email_date': datetime.now(timezone.utc).isoformat(),
-                    'status': 'active',
-                    'is_blacklisted': 0,
-                    'suppressed': 0,
-                    'suppression_reason': None,
-                    'lang': c.get('lang', 'en_US'),
-                    'country': c.get('country')
-                }
-                modified = True
-        if modified:
-            _write_test_state(state_dict)
-
     # 3. Apply runtime limit if set to avoid performing too many state checkups
     limit = config.get_limit()
     if limit:
@@ -626,6 +641,22 @@ def discovery_node(state) -> dict:
             
     print(f"[Agent] [Node] Active queue compiled from Odoo/JSON: {len(active_leads)} lead(s)")
         
+    # Write initial progress
+    progress_data = {
+        "status": "running",
+        "total": len(active_leads),
+        "processed": 0,
+        "percentage": 0,
+        "current_lead": None,
+        "last_update": datetime.now(timezone.utc).isoformat()
+    }
+    progress_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'progress.json')
+    try:
+        with open(progress_file, 'w', encoding='utf-8') as f:
+            json.dump(progress_data, f, indent=4)
+    except Exception as pe:
+        print(f"[Warning] Could not write initial progress: {pe}")
+        
     return {
         "leads_to_process": active_leads,
         "processed_leads": []
@@ -646,14 +677,45 @@ def process_lead_node(state) -> dict:
     partner_id = current.get("partner_id")
     partner_name = current.get("partner_name")
 
-    print(f"\n[Agent] [Node] Checking constraints for customer: '{partner_name}' (ID: {partner_id})...")
+    total_leads = len(queue) + len(processed) + 1
+    current_idx = len(processed) + 1
+    percent = int((current_idx / total_leads) * 100) if total_leads > 0 else 100
+    
+    # Progress bar visualization (using ASCII characters for maximum terminal compatibility)
+    bar_length = 20
+    filled_length = int(bar_length * current_idx // total_leads) if total_leads > 0 else bar_length
+    bar = '=' * filled_length + '-' * (bar_length - filled_length)
+    try:
+        print(f"\n[Agent] [Progress] [{bar}] {percent}% ({current_idx}/{total_leads}) | Checking constraints for customer: '{partner_name}' (ID: {partner_id})...")
+    except UnicodeEncodeError:
+        safe_name = partner_name.encode('ascii', errors='replace').decode('ascii')
+        print(f"\n[Agent] [Progress] [{bar}] {percent}% ({current_idx}/{total_leads}) | Checking constraints for customer: '{safe_name}' (ID: {partner_id})...")
+
+    # Write to progress.json
+    progress_data = {
+        "status": "running",
+        "total": total_leads,
+        "processed": current_idx,
+        "percentage": percent,
+        "current_lead": {
+            "partner_id": partner_id,
+            "partner_name": partner_name
+        },
+        "last_update": datetime.now(timezone.utc).isoformat()
+    }
+    progress_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'progress.json')
+    try:
+        with open(progress_file, 'w', encoding='utf-8') as f:
+            json.dump(progress_data, f, indent=4)
+    except Exception as pe:
+        print(f"[Warning] Could not write progress.json: {pe}")
 
     status_log = {}
     try:
         # 1. Read Local State
         lead_state = get_campaign_lead.invoke({"partner_id": partner_id})
         if not lead_state or lead_state.get("status") != "active":
-            print(f"  [Skip] Lead is not active in local campaign leads database (status: {lead_state.get('status')}).")
+            print(f"  [Skip] Lead is not active in local campaign leads database (status: {format_status(lead_state.get('status'))}).")
             status_log = {
                 "partner_id": partner_id,
                 "partner_name": partner_name,
@@ -673,6 +735,24 @@ def process_lead_node(state) -> dict:
         last_email_sent_date_str = lead_state.get("last_email_sent_date")
         next_email_date_str = lead_state.get("next_email_date")
 
+        # Check if a draft is pending manual review (lisa_wb_processed is False)
+        if lead_state.get("has_pending_draft"):
+            print(f"  [Skip] Customer has an email draft pending manual review in Odoo.")
+            status_log = {
+                "partner_id": partner_id,
+                "partner_name": partner_name,
+                "status": "skipped",
+                "campaign_status": "active",
+                "campaign_stage": campaign_stage,
+                "log": "Skipped: Outreach email draft is pending manual review in Odoo."
+            }
+            processed.append(status_log)
+            return {
+                "leads_to_process": queue,
+                "processed_leads": processed,
+                "current_lead": current
+            }
+
         # 2. Check Timing / Schedule Check
         is_due = False
         if next_email_date_str:
@@ -684,7 +764,7 @@ def process_lead_node(state) -> dict:
                 is_due = True
             elif last_email_sent_date_str:
                 last_dt = datetime.fromisoformat(last_email_sent_date_str.replace('Z', '+00:00'))
-                next_email_date = last_dt + timedelta(days=7)
+                next_email_date = last_dt + timedelta(days=config.WINBACK_INTERVAL_DAYS)
                 if datetime.now(timezone.utc) >= next_email_date:
                     is_due = True
             else:
@@ -805,7 +885,7 @@ def process_lead_node(state) -> dict:
             update_campaign_lead.invoke({"partner_id": partner_id, "status": "reactivated", "campaign_stage": "none"})
             log_campaign_note.invoke({"partner_id": partner_id, "message_body": f"Customer reactivated via new order {', '.join(order_names)}!"})
             schedule_partner_activity.invoke({"partner_id": partner_id, "summary": "Win-Back: Customer reactivated by placing order", "note_html": f"Orders: {', '.join(order_names)}"})
-            print(f"  [Reactivated] Lead placed new orders: {order_names}. Campaign status set to 'reactivated'.")
+            print(f"  [Reactivated] Lead placed new orders: {order_names}. Campaign status set to 'Reactivated (Success)'.")
             status_log = {
                 "partner_id": partner_id,
                 "partner_name": partner_name,
@@ -829,18 +909,22 @@ def process_lead_node(state) -> dict:
             
         replies = check_customer_replies.invoke({"partner_id": partner_id, "since_date_utc": reply_since_date})
         if replies:
-            print(f"  [Reply Detected] Customer replied to outreach. Invoking deep agent to process reply...")
+            print(f"  [Reply Detected] Customer replied to outreach (stage: '{format_stage(campaign_stage)}'). Stopping campaign and notifying salesperson...")
+            # Pre-set status to 'replied' so the orchestrator knows the campaign must stop.
+            # The reply_analyst subagent (invoked by the orchestrator) will update this further
+            # (e.g. to 'opt_out') if the reply is an explicit unsubscribe request.
+            update_campaign_lead.invoke({"partner_id": partner_id, "status": "replied"})
             run_agent_for_lead(partner_id)
             updated_lead = get_campaign_lead.invoke({"partner_id": partner_id})
-            status = updated_lead.get("status", "active")
-            stage = updated_lead.get("campaign_stage", "none")
+            status = updated_lead.get("status", "replied")
+            stage = updated_lead.get("campaign_stage", campaign_stage)
             status_log = {
                 "partner_id": partner_id,
                 "partner_name": partner_name,
                 "status": "success",
                 "campaign_status": status,
                 "campaign_stage": stage,
-                "log": f"Processed reply. Campaign status: {status}, stage: {stage}."
+                "log": f"Reply detected at stage '{campaign_stage}'. Campaign stopped. Final status: {status}. Salesperson activity assigned."
             }
             processed.append(status_log)
             return {
@@ -850,11 +934,11 @@ def process_lead_node(state) -> dict:
             }
 
         # 8. Check for Recent Outreach (Frequency Cap)
-        recent_outreach_info = check_recent_outreach.invoke({"partner_id": partner_id, "days_limit": 7})
+        recent_outreach_info = check_recent_outreach.invoke({"partner_id": partner_id, "days_limit": config.WINBACK_INTERVAL_DAYS})
         if recent_outreach_info.get("has_recent_outreach"):
             last_date_str = recent_outreach_info.get("last_outreach_date")
             last_date = datetime.fromisoformat(last_date_str.replace(' ', 'T').replace('Z', '+00:00'))
-            rescheduled_date = last_date + timedelta(days=7)
+            rescheduled_date = last_date + timedelta(days=config.WINBACK_INTERVAL_DAYS)
             rescheduled_date_str = rescheduled_date.isoformat()
             
             update_campaign_lead.invoke({
@@ -862,7 +946,7 @@ def process_lead_node(state) -> dict:
                 "next_email_date": rescheduled_date_str
             })
             
-            print(f"  [Skip] Customer had outreach email sent in the last 7 days (on {last_date_str}). Rescheduling next check to {rescheduled_date_str}.")
+            print(f"  [Skip] Customer had outreach email sent in the last {config.WINBACK_INTERVAL_DAYS} days (on {last_date_str}). Rescheduling next check to {rescheduled_date_str}.")
             status_log = {
                 "partner_id": partner_id,
                 "partner_name": partner_name,
@@ -879,7 +963,11 @@ def process_lead_node(state) -> dict:
             }
 
         # If all checks pass, we run the Deep Agent to draft and send the email
-        print(f"  [Due] All checks passed. Invoking Deep Agent to draft email...")
+        # (or to finalize the campaign as cold if stage is 'email_3_sent' with no reply)
+        if campaign_stage == "email_3_sent":
+            print(f"  [Due] 3rd email wait period complete. No reply detected. Invoking Deep Agent to mark customer as Cold...")
+        else:
+            print(f"  [Due] All checks passed. Invoking Deep Agent to draft email...")
         run_agent_for_lead(partner_id)
 
         # Retrieve the updated lead state after agent run
@@ -887,13 +975,18 @@ def process_lead_node(state) -> dict:
         status = updated_lead.get("status", "active")
         stage = updated_lead.get("campaign_stage", "none")
 
+        if campaign_stage == "email_3_sent" and status == "cold":
+            log_msg = f"3-email campaign complete. No reply received. Customer marked as Cold (No Response) and salesperson notified."
+        else:
+            log_msg = f"Successfully processed lead. Status: {format_status(status)}, Stage: {format_stage(stage)}."
+
         status_log = {
             "partner_id": partner_id,
             "partner_name": partner_name,
             "status": "success",
             "campaign_status": status,
             "campaign_stage": stage,
-            "log": f"Successfully processed lead. Status: {status}, Stage: {stage}."
+            "log": log_msg
         }
     except Exception as e:
         print(f"  [ERROR] Processing lead {partner_id} failed: {e}")
@@ -923,11 +1016,33 @@ def summary_node(state) -> dict:
     print("\n[Agent] [Node] Compiling Final Pipeline Summary...")
     processed = state.get("processed_leads") or []
 
+    # Write to progress.json as completed
+    progress_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'progress.json')
+    try:
+        total = len(processed)
+        if os.path.exists(progress_file):
+            with open(progress_file, 'r', encoding='utf-8') as f:
+                existing_data = json.load(f)
+                total = existing_data.get("total", total)
+        progress_data = {
+            "status": "completed",
+            "total": total,
+            "processed": total,
+            "percentage": 100,
+            "current_lead": None,
+            "last_update": datetime.now(timezone.utc).isoformat()
+        }
+        with open(progress_file, 'w', encoding='utf-8') as f:
+            json.dump(progress_data, f, indent=4)
+        print("[Agent] [Progress] Campaign runner progress: COMPLETED (100%)")
+    except Exception as pe:
+        print(f"[Warning] Could not write final progress.json: {pe}")
+
     if not processed:
         processed_str = "No active campaign leads were processed in this run."
     else:
         processed_str = "\n".join(
-            f"- Lead {p['partner_id']} ({p['partner_name']}): {p['status'].upper()} | {p['log']}"
+            f"- Lead {p['partner_id']} ({p['partner_name']}): Execution: {p['status'].upper()} | Campaign Stage: {format_stage(p['campaign_stage'])} | Campaign Status: {format_status(p['campaign_status'])} | Log: {p['log']}"
             for p in processed
         )
 

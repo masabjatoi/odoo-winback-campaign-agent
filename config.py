@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 
 # Load environment variables
 dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
-load_dotenv(dotenv_path=dotenv_path)
+load_dotenv(dotenv_path=dotenv_path, override=True)
 
 # Odoo Connection
 ODOO_URL = os.getenv('ODOO_URL', '')
@@ -17,19 +17,23 @@ MISTRAL_API_KEY = os.getenv('MISTRAL_API_KEY', '')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY') or os.getenv('groq_api_key', '')
 
-# Win-Back Campaign Parameters
-INACTIVITY_THRESHOLD_DAYS = int(os.getenv('INACTIVITY_THRESHOLD_DAYS', 60))
-WINBACK_INTERVAL_DAYS = int(os.getenv('WINBACK_INTERVAL_DAYS', 7))
-WINBACK_OFFER_EMAIL2 = os.getenv('WINBACK_OFFER_EMAIL2', 'WELCOME10')
-MAX_WINBACK_EMAILS = int(os.getenv('MAX_WINBACK_EMAILS', 3))
-FINAL_WAIT_DAYS = int(os.getenv('FINAL_WAIT_DAYS', 7))
+# Win-Back Campaign Parameters (Overridden dynamically from Odoo)
+INACTIVITY_THRESHOLD_DAYS = None
+WINBACK_INTERVAL_DAYS = None
+WINBACK_OFFER_EMAIL2 = None
+MAX_WINBACK_EMAILS = None
+FINAL_WAIT_DAYS = None
+SEGMENT_BY_CATEGORY = None
+AUTO_REPLY = None
+RECIPIENT_OVERRIDE = None
 
-# Testing Mode
-TEST_MODE = os.getenv('TEST_MODE', 'true').strip().lower() in ('true', '1', 'yes')
-AUTO_APPROVE = os.getenv('AUTO_APPROVE', 'false').strip().lower() in ('true', '1', 'yes')
+
+# Execution Mode
+AUTO_APPROVE = False
 GMAIL_SMTP_USER = os.getenv('GMAIL_SMTP_USER', '')
 GMAIL_SMTP_APP_PASSWORD = os.getenv('GMAIL_SMTP_APP_PASSWORD', '')
 TEST_EMAIL_TO = os.getenv('TEST_EMAIL_TO', 'jatoimasab@gmail.com')
+ODOO_SOCKET_TIMEOUT = int(os.getenv('ODOO_SOCKET_TIMEOUT', 90))
 
 # Database path
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'win_back_agent.db')
