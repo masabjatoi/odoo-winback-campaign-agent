@@ -304,11 +304,16 @@ def get_inactive_partners(inactivity_threshold_days: int = None) -> list:
         last_order_map = {c[0]: c[1] for c in inactive_candidates}
         
         eligible_partners = []
+        seen_emails = set()
         for p in partner_details:
             pid = p['id']
             email = (p.get('email') or '').strip().lower()
             if email in blacklisted_emails:
                 continue
+            if email in seen_emails:
+                print(f"[Tools] Skipping partner ID {pid} because email '{email}' is already being processed under another partner ID.")
+                continue
+            seen_emails.add(email)
                 
             salesperson = p.get('user_id')
             salesperson_id = salesperson[0] if salesperson else None
