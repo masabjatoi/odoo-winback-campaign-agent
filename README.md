@@ -20,6 +20,15 @@ An advanced, production-ready B2B customer re-engagement AI agent built on **Lan
 
 ---
 
+## 🔄 Recent Updates & Optimizations
+
+* **Contact Email Deduplication:** Added duplicate contact card filtering based on email address during candidate discovery, preventing duplicate drip campaigns from targeting identical contact emails.
+* **Windows Connection Host Resolution Fix:** Updated connection configurations to `127.0.0.1` to prevent local DNS IPv6/IPv4 mismatch socket connection failures on Windows hosts.
+* **Conditional Chatter Log Privacy:** Suppressed redundant chatter messages when `AUTO_REPLY` is ON to avoid cluttering the chatter feed with duplicate email bodies. Chatter notes are only posted when auto-reply is OFF (manual review mode).
+* **Odoo Addon Custom Branding:** Upgraded the custom Odoo addon view definitions with custom branding icons/logos linked to Odoo's main home dashboard icons via `web_icon` settings.
+
+---
+
 ## 🛠️ Tech Stack
 * **Framework**: Python 3.10+, LangChain, LangGraph, Deep Agents
 * **Models**: Mistral (Mistral-Large), Gemini (Gemini-1.5-Flash), Groq (Llama-3.3-70b)
