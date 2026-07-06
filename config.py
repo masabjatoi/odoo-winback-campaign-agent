@@ -36,7 +36,8 @@ TEST_EMAIL_TO = os.getenv('TEST_EMAIL_TO', 'jatoimasab@gmail.com')
 ODOO_SOCKET_TIMEOUT = int(os.getenv('ODOO_SOCKET_TIMEOUT', 90))
 
 # Database path
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'win_back_agent.db')
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'win_back_agent.db')
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 # Runtime processing limit helper (loads from env to avoid runtime module mutation)
 def get_limit():
