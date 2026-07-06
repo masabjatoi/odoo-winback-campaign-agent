@@ -32,8 +32,8 @@ RECIPIENT_OVERRIDE = None
 AUTO_APPROVE = False
 GMAIL_SMTP_USER = os.getenv('GMAIL_SMTP_USER', '')
 GMAIL_SMTP_APP_PASSWORD = os.getenv('GMAIL_SMTP_APP_PASSWORD', '')
-TEST_EMAIL_TO = os.getenv('TEST_EMAIL_TO', 'jatoimasab@gmail.com')
 ODOO_SOCKET_TIMEOUT = int(os.getenv('ODOO_SOCKET_TIMEOUT', 90))
+
 
 # Database path
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'win_back_agent.db')
