@@ -637,8 +637,13 @@ def send_winback_email(
                 elif "WB-1" in tag_upper or "WB1" in tag_upper:
                     stage_num = "1"
 
-            # Chatter draft post removed by request to keep chatter feed clean
-            print(f"[Tools] Draft compiled and saved for partner {partner_id}.")
+            # Post the draft email content to chatter for manual review since auto-reply is OFF
+            try:
+                chatter_html = f"<b>[Win-Back] Draft Created: {subject}</b><br/><br/>{email_body_html}"
+                _post_wb_chatter(chatter_html)
+            except Exception as post_err:
+                print(f"[Tools] [Warning] Failed to post draft to partner chatter: {post_err}")
+            print(f"[Tools] Draft compiled, saved on record, and posted to chatter for partner {partner_id}.")
 
         return {
             "success": True,
