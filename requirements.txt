@@ -5,3 +5,4 @@ langchain-google-genai
 langchain-mistralai
 langchain-groq
 deepagents
+deepeval
