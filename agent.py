@@ -221,8 +221,30 @@ def invoke_llm_with_retry(runnable, messages, run_config=None, max_retries=5, in
                 raise e
 
 
+_global_token_counter = {
+    "input_tokens": 0,
+    "output_tokens": 0
+}
+
 class ToolLoggingCallbackHandler(BaseCallbackHandler):
     """Prints start, end, and error events for all tool executions."""
+    def on_llm_end(self, response, **kwargs):
+        global _global_token_counter
+        try:
+            for generations in response.generations:
+                for gen in generations:
+                    msg = getattr(gen, "message", None)
+                    if msg is not None:
+                        metadata = getattr(msg, "response_metadata", {})
+                        usage = metadata.get("token_usage") or getattr(msg, "usage_metadata", {})
+                        if usage:
+                            p_tokens = usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0)
+                            c_tokens = usage.get("completion_tokens", 0) or usage.get("output_tokens", 0)
+                            _global_token_counter["input_tokens"] += p_tokens
+                            _global_token_counter["output_tokens"] += c_tokens
+        except Exception:
+            pass
+
     def __init__(self):
         super().__init__()
         self._run_tool_names = {}
@@ -1054,6 +1076,12 @@ def summary_node(state) -> dict:
             processed_leads=processed_str
         )
         response = invoke_llm_with_retry(llm, [HumanMessage(content=prompt)])
+        if response:
+            metadata = getattr(response, "response_metadata", {})
+            usage = metadata.get("token_usage") or getattr(response, "usage_metadata", {})
+            if usage:
+                _global_token_counter["input_tokens"] += usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0)
+                _global_token_counter["output_tokens"] += usage.get("completion_tokens", 0) or usage.get("output_tokens", 0)
         return {"final_report": response.content}
     except Exception as e:
         print(f"[Agent] [Warning] LLM summary report failed ({e}). Generating fallback python report...")
@@ -1067,3 +1095,57 @@ def summary_node(state) -> dict:
             "*Note: This report was compiled by Python fallback because the LLM summary endpoint was rate-limited or unavailable.*"
         ]
         return {"final_report": "\n\n".join(report_lines)}
+
+
+def export_metrics():
+    global _global_token_counter
+    import json
+    import os
+    from datetime import datetime, timezone
+    
+    input_tokens = _global_token_counter["input_tokens"]
+    output_tokens = _global_token_counter["output_tokens"]
+    
+    # Pricing configuration (USD per 1M tokens)
+    pricing = {
+        "mistral": {"input": 2.0 / 1000000, "output": 6.0 / 1000000},
+        "groq": {"input": 0.59 / 1000000, "output": 0.79 / 1000000},
+        "gemini": {"input": 0.075 / 1000000, "output": 0.30 / 1000000}
+    }
+    
+    provider = config.LLM_PROVIDER
+    rates = pricing.get(provider, {"input": 0.0, "output": 0.0})
+    estimated_cost = (input_tokens * rates["input"]) + (output_tokens * rates["output"])
+    
+    metrics_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    os.makedirs(metrics_dir, exist_ok=True)
+    metrics_path = os.path.join(metrics_dir, "run_metrics.json")
+    
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "llm_provider": provider,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+        "estimated_cost_usd": float(f"{estimated_cost:.6f}")
+    }
+    
+    # Read existing entries
+    existing_entries = []
+    if os.path.exists(metrics_path) and os.path.getsize(metrics_path) > 0:
+        try:
+            with open(metrics_path, "r", encoding="utf-8") as f:
+                existing_entries = json.load(f)
+                if not isinstance(existing_entries, list):
+                    existing_entries = []
+        except Exception:
+            pass
+            
+    existing_entries.append(entry)
+    
+    try:
+        with open(metrics_path, "w", encoding="utf-8") as f:
+            json.dump(existing_entries, f, indent=4)
+        print(f"[Metrics Logger] Run metrics saved: input_tokens={input_tokens}, output_tokens={output_tokens}, cost=${estimated_cost:.6f}")
+    except Exception as e:
+        print(f"[Metrics Logger] [Warning] Failed to save metrics: {e}")

@@ -34,6 +34,10 @@ def main():
         "final_report": None
     })
     
+    # Export execution run metrics (token counts & cost)
+    from agent import export_metrics
+    export_metrics()
+    
     # 4. Safely print the final run summary report
     print("\n" + "=" * 60)
     print("  FINAL EXECUTION REPORT")

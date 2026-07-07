@@ -14,6 +14,7 @@ env/
 *.db-journal
 *.sqlite
 inactive_customers.json
+progress.json
 
 # Local configurations / secrets
 .env
@@ -23,6 +24,11 @@ inactive_customers.json
 # Human in the Loop (HIL) temporary files
 approve.txt
 edit_email.json
+
+# Test caches & local data
+.pytest_cache/
+.deepeval/
+data/
 
 # IDE / Project metadata
 .idea/
