@@ -702,16 +702,7 @@ def process_lead_node(state) -> dict:
     total_leads = len(queue) + len(processed) + 1
     current_idx = len(processed) + 1
     percent = int((current_idx / total_leads) * 100) if total_leads > 0 else 100
-    
-    # Progress bar visualization (using ASCII characters for maximum terminal compatibility)
-    bar_length = 20
-    filled_length = int(bar_length * current_idx // total_leads) if total_leads > 0 else bar_length
-    bar = '=' * filled_length + '-' * (bar_length - filled_length)
-    try:
-        print(f"\n[Agent] [Progress] [{bar}] {percent}% ({current_idx}/{total_leads}) | Checking constraints for customer: '{partner_name}' (ID: {partner_id})...")
-    except UnicodeEncodeError:
-        safe_name = partner_name.encode('ascii', errors='replace').decode('ascii')
-        print(f"\n[Agent] [Progress] [{bar}] {percent}% ({current_idx}/{total_leads}) | Checking constraints for customer: '{safe_name}' (ID: {partner_id})...")
+
 
     # Write to progress.json
     progress_data = {
@@ -1056,7 +1047,7 @@ def summary_node(state) -> dict:
         }
         with open(progress_file, 'w', encoding='utf-8') as f:
             json.dump(progress_data, f, indent=4)
-        print("[Agent] [Progress] Campaign runner progress: COMPLETED (100%)")
+
     except Exception as pe:
         print(f"[Warning] Could not write final progress.json: {pe}")
 
