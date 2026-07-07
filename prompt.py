@@ -49,4 +49,8 @@ Provide actionable next steps for the B2B sales system operator based on today's
 
 ---
 *Note: Ensure all tables and bullet points are properly aligned and formatted. Do not include template variables in the final output.*
+
+FORMATTING RULES (strictly enforced):
+- Do NOT use em dashes (the character "--" or "\u2014") anywhere in the report. Use a plain hyphen (-) instead.
+- Do NOT mention the words "win-back", "win back", "cross-sell", or "cross sell" anywhere in the report content or email copy.
 """
