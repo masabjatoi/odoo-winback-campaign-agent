@@ -130,3 +130,67 @@ When certain business milestones are reached, the agent schedules a Native Odoo 
 * **XML-RPC Proxy Thread Safety**: Always instantiate a fresh XML-RPC server proxy on demand inside `get_odoo_client()` rather than caching the proxy object itself to prevent connection collision during parallel node executions.
 * **Odoo message_post ID Wrapping**: Posting a comment to a partner record's chatter via Odoo's `message_post` expects the partner ID to be double-wrapped inside a list (e.g., `[[partner_id]]`) due to RPC array deserialization quirks.
 * **Checklist Cache Reset per Run**: `run_agent_for_lead` calls `clear_todo_list(partner_id)` at the start of every single execution to guarantee a fresh checklist is created in memory and no tasks are skipped.
+
+---
+
+## 10. Updates & Additions (2026-07-07)
+
+### 10.1 Token Cost Metrics Logging
+- **What:** Every LLM call is intercepted by a `ToolLoggingCallbackHandler` in `agent.py` that accumulates `input_tokens` and `output_tokens` across the full pipeline run. At the end of each run, `export_metrics()` is called from `main.py`.
+- **Output file:** `data/run_metrics.json` (excluded from Git, persisted locally or via Docker volume).
+- **Example entry:**
+  ```json
+  { "timestamp": "2026-07-07T12:00:00Z", "input_tokens": 260274, "output_tokens": 2070, "cost_usd": 0.532968 }
+  ```
+- **Cost model:** Mistral Large — $0.003/1K input tokens, $0.009/1K output tokens.
+
+---
+
+### 10.2 AI Quality Testing with DeepEval (`tests/`)
+- **What:** A full AI evaluation test suite added under `tests/` using the [DeepEval](https://github.com/confident-ai/deepeval) framework and G-Eval metrics.
+- **Files:**
+  - `tests/conftest.py` — Loads `.env` before pytest; falls back to mock credentials for offline/CI runs.
+  - `tests/test_graph.py` — Unit tests verifying LangGraph state transitions and node structure without invoking the LLM.
+  - `tests/test_ai_quality.py` — Live G-Eval evaluation: sends real email drafts to Mistral Large acting as an LLM judge. Scores on B2B tone, empathy, no opt-out language, and overall email quality.
+- **How to run:**
+  ```bash
+  deepeval test run tests/test_ai_quality.py
+  ```
+- **Dependency:** `deepeval` added to `requirements.txt`.
+
+---
+
+### 10.3 Confident AI Dashboard Integration
+- **What:** Test run results are automatically posted to [Confident AI](https://app.confident-ai.com/) after each `deepeval test run`.
+- **How:** DeepEval reads `CONFIDENT_API_KEY` from `.env.local` (excluded from Git) and uploads results to the project dashboard.
+- **Dashboard:** `https://app.confident-ai.com/project/cmraog1wj001pog13p8pa1tg8/`
+- **Note:** If the API key is absent, DeepEval silently skips the upload — no error is thrown.
+
+---
+
+### 10.4 Prompt Formatting Guardrails
+Two strict rules added to all LLM system prompts (`prompt.py`, `skills/orchestrator_playbook.md`, `skills/copywriter_playbook.md`):
+1. **No em dashes** (`—` or `–`) — use plain hyphens (`-`) instead.
+2. **No campaign naming** — the words "win-back", "win back", "cross-sell", "cross sell" are explicitly forbidden in all generated email copy and operator reports.
+- **Playbook renames:** The orchestrator persona was renamed from "Win-Back Orchestrator" to "Orchestrator Sales Agent". The copywriter playbook removed "Win-Back Sales Agent" from its persona description. The "Cross-Sell agent" reference in the spacing rule was also removed.
+
+---
+
+### 10.5 Terminal Progress Bar Removed
+- **What removed:** The ASCII `[====----] 100%` progress bar and `[Agent] [Progress] ...` print statements were removed from `agent.py`.
+- **Why:** Terminal-only output with no value in Docker or cron environments.
+- **What remains:** `progress.json` continues to be written at each step with `status`, `total`, `processed`, `percentage`, `current_lead`, and `last_update` fields for programmatic consumption.
+
+---
+
+### 10.6 `progress.json` Removed from Git
+- `progress.json` was previously tracked in Git. It has been untracked (`git rm --cached`) and added to `.gitignore`.
+- This file changes on every run and contains live runtime state — it must not be committed to version control.
+
+---
+
+### 10.7 Repository Cleanup
+- **`.gitignore`** updated to exclude: `.env.local`, `.deepeval/`, `.pytest_cache/`, `data/`, `progress.json`.
+- **`requirements.txt`** updated to include `deepeval`.
+- **Status: Fully Operational.**
+
