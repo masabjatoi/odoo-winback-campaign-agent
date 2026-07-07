@@ -662,23 +662,7 @@ def discovery_node(state) -> dict:
             })
             
     print(f"[Agent] [Node] Active queue compiled from Odoo/JSON: {len(active_leads)} lead(s)")
-        
-    # Write initial progress
-    progress_data = {
-        "status": "running",
-        "total": len(active_leads),
-        "processed": 0,
-        "percentage": 0,
-        "current_lead": None,
-        "last_update": datetime.now(timezone.utc).isoformat()
-    }
-    progress_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'progress.json')
-    try:
-        with open(progress_file, 'w', encoding='utf-8') as f:
-            json.dump(progress_data, f, indent=4)
-    except Exception as pe:
-        print(f"[Warning] Could not write initial progress: {pe}")
-        
+
     return {
         "leads_to_process": active_leads,
         "processed_leads": []
@@ -699,29 +683,7 @@ def process_lead_node(state) -> dict:
     partner_id = current.get("partner_id")
     partner_name = current.get("partner_name")
 
-    total_leads = len(queue) + len(processed) + 1
-    current_idx = len(processed) + 1
-    percent = int((current_idx / total_leads) * 100) if total_leads > 0 else 100
 
-
-    # Write to progress.json
-    progress_data = {
-        "status": "running",
-        "total": total_leads,
-        "processed": current_idx,
-        "percentage": percent,
-        "current_lead": {
-            "partner_id": partner_id,
-            "partner_name": partner_name
-        },
-        "last_update": datetime.now(timezone.utc).isoformat()
-    }
-    progress_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'progress.json')
-    try:
-        with open(progress_file, 'w', encoding='utf-8') as f:
-            json.dump(progress_data, f, indent=4)
-    except Exception as pe:
-        print(f"[Warning] Could not write progress.json: {pe}")
 
     status_log = {}
     try:
@@ -1029,27 +991,7 @@ def summary_node(state) -> dict:
     print("\n[Agent] [Node] Compiling Final Pipeline Summary...")
     processed = state.get("processed_leads") or []
 
-    # Write to progress.json as completed
-    progress_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'progress.json')
-    try:
-        total = len(processed)
-        if os.path.exists(progress_file):
-            with open(progress_file, 'r', encoding='utf-8') as f:
-                existing_data = json.load(f)
-                total = existing_data.get("total", total)
-        progress_data = {
-            "status": "completed",
-            "total": total,
-            "processed": total,
-            "percentage": 100,
-            "current_lead": None,
-            "last_update": datetime.now(timezone.utc).isoformat()
-        }
-        with open(progress_file, 'w', encoding='utf-8') as f:
-            json.dump(progress_data, f, indent=4)
 
-    except Exception as pe:
-        print(f"[Warning] Could not write final progress.json: {pe}")
 
     if not processed:
         processed_str = "No active campaign leads were processed in this run."
