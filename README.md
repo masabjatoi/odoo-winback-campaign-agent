@@ -54,31 +54,45 @@ The agent runs completely database-free locally. It synchronizes and tracks camp
 git clone https://github.com/masabjatoi/odoo-winback-campaign-agent.git
 cd odoo-winback-campaign-agent
 python -m venv .venv
-.venv\Scripts\activate
+.venv\Scripts\activate  # Windows
+# source .venv/bin/activate  # macOS / Linux
 pip install -r requirements.txt
 ```
 
 ### 2. Configure Credentials
-Create a `.env` file in the root directory:
+Copy `.env.example` to `.env` and fill in your values:
+```bash
+cp .env.example .env
+```
+
+The only required values are:
 ```ini
 ODOO_URL=https://your-odoo-instance.com
 ODOO_DB=your-db-name
 ODOO_USERNAME=your-username
 ODOO_API_KEY=your-xmlrpc-api-key
 
-LLM_PROVIDER=mistral # or gemini, groq
+LLM_PROVIDER=mistral
 MISTRAL_API_KEY=your-mistral-key
-GEMINI_API_KEY=your-gemini-key
 ```
 
-### 3. Run the Pipeline
-To execute the pipeline locally:
+> **All campaign behavior settings** (inactivity threshold, email interval, max emails, promo codes, auto-send vs. manual review, recipient override) are configured directly inside Odoo:
+> `Settings → General Settings → Lisa AI Win-Back`
+
+### 3. Run the Odoo Setup Script (first time only)
+This creates the `winback.campaign` table and all required custom fields on `res.company` and `res.partner` in your Odoo instance:
+```bash
+python setup_odoo.py
+```
+
+### 4. Run the Pipeline
 ```bash
 python main.py
 ```
-You can also pass a processing limit for testing:
+
+Optionally limit how many leads are processed (useful for testing):
 ```bash
-python main.py --limit 15
+python main.py --limit 5
 ```
 
 ---
