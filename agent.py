@@ -537,7 +537,7 @@ def run_agent_for_lead(partner_id: int):
                 ]
             }
         ],
-        interrupt_on={"send_winback_email": True} if config.AUTO_REPLY and not getattr(config, 'AUTO_APPROVE', False) else None,
+        interrupt_on=None,
         checkpointer=MemorySaver(),
     )
 

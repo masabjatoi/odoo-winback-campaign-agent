@@ -97,8 +97,7 @@ We have successfully implemented persistent semantic memory to record and check 
 ## 6. Dynamic Non-blocking HIL Approval
 
 We have successfully implemented a dynamic Human-in-the-Loop (HIL) verification flow:
-* **Odoo-Native HIL (Non-blocking)**: When `AUTO_REPLY` is disabled (False) in Odoo company config, `send_winback_email` writes the drafted HTML content directly to the partner's record and exits. The graph completes without CLI prompt halts, allowing the script to run seamlessly in daily cron loops.
-* **CLI HIL (Interactive)**: When `AUTO_REPLY` is True and `AUTO_APPROVE` is False, the pipeline automatically pauses in interactive terminal runs. It prompts the CLI operator to Approve (`A`), Edit (`E`), Rewrite/Regenerate (`W`), or Reject (`R`) the email before dispatch.
+* **Automated Cron Mode**: If `AUTO_REPLY` is True, the agent sends emails automatically through Odoo without requiring any manual terminal inputs or approvals, ensuring seamless execution in background cron jobs.
 
 ---
 

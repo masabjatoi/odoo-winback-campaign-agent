@@ -12,9 +12,9 @@ An advanced, production-ready B2B customer re-engagement AI agent built on **Lan
   * **Email Copywriter**: Tailors outreach copy using customer purchase history.
   * **Reply Analyst**: Evaluates incoming replies, classifies customer intent (OOO, Grievance, Inquiry, Opt-Out), and triggers corresponding workflows.
 * **Pre-Agent Optimization**: Directly checks eligibility (active/blacklist), timing, suppression tags, new orders, and replies using Python prior to executing the LLM agent to ensure zero redundant LLM API costs.
-* **Non-blocking & Interactive HIL (Human-in-the-Loop)**:
+* **Non-blocking Review & Automation**:
   * **Odoo-Native Review**: If `AUTO_REPLY` is disabled (False) in Odoo company config, re-engagement email drafts are saved directly to `x_lisa_wb_email_html` and `x_lisa_wb_email_subject` on the customer record. The agent exits cleanly and successfully, allowing sales reps to review and send them natively from Odoo.
-  * **CLI Review**: If `AUTO_REPLY` is enabled but `AUTO_APPROVE` is False, the pipeline pauses before dispatching emails in interactive terminal runs, allowing developers to Approve (`A`), Edit (`E`), Rewrite/Regenerate (`W`), or Reject (`R`) drafts.
+  * **Cron & Background Ready**: If `AUTO_REPLY` is enabled (True) in Odoo company config, the agent sends emails automatically through Odoo without requiring any manual terminal inputs or approvals.
 * **Semantic Memory**: Stores objections (e.g. "business closed", "switched to competitor") in Odoo's native Internal Notes (`comment`) field to permanently skip future re-engagement campaigns.
 * **Self-Healing Rate Limit Retry**: Gracefully handles Gemini, Mistral, and Groq rate limits with exponential backoff.
 
@@ -125,4 +125,4 @@ python main.py --limit 5
 ## 🚨 Critical Operational Guidelines
 1. **XML-RPC Thread Safety**: Never share a global `ServerProxy` instance across graph nodes. A fresh connection is instantiated per RPC request in `get_odoo_client()` to prevent socket collisions.
 2. **Odoo 16/17 Blacklist Format**: Avoid direct checks of `is_blacklisted` in `res.partner`. Verify blacklist status directly on `mail.blacklist` querying by email address.
-3. **Non-Interactive (TTY) Execution**: In automated cron environments, when manual review is enabled in Odoo (`AUTO_REPLY=False`), the agent runs in non-blocking mode. If `AUTO_REPLY=True` but `AUTO_APPROVE=False`, standard input must be closed (e.g. `python main.py < /dev/null` or `$null | python main.py`) to prevent the CLI HIL prompt from blocking indefinitely.
+3. **Non-Interactive (TTY) Execution**: In automated cron environments, when manual review is enabled in Odoo (`AUTO_REPLY=False`), the agent runs in non-blocking mode, writing email drafts to Odoo Chatter. When `AUTO_REPLY=True` is enabled, the agent executes fully non-interactively without prompting or requiring any standard input redirection.

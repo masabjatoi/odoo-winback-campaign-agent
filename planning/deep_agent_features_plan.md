@@ -59,8 +59,7 @@ Memories are stored and queried natively on Odoo:
 Ensure that email drafts can be reviewed by a salesperson when Odoo is configured in manual review mode, while running completely hands-free in automated cron mode.
 
 ### Implementation
-* **Odoo-Native HIL (Non-blocking)**: If `AUTO_REPLY` is False in Odoo settings, the agent compiles the outreach copy, writes it to Odoo fields (`x_lisa_wb_email_html` and `x_lisa_wb_email_subject`), updates the campaign status to `'draft'`, and exits cleanly without CLI prompts or polling blocks.
-* **CLI HIL (Interactive)**: If `AUTO_REPLY` is True and `AUTO_APPROVE` is False, the pipeline pauses during interactive terminal runs to prompt the user to Approve (`A`), Edit (`E`), Rewrite (`W`), or Reject (`R`) the email before dispatch.
+* **Automated Cron Mode**: If `AUTO_REPLY` is True in Odoo settings, the agent sends emails automatically through Odoo without requiring any manual terminal inputs or approvals, ensuring seamless execution in background cron jobs.
 
 ---
 

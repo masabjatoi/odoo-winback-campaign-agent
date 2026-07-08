@@ -158,7 +158,6 @@ def load_odoo_company_config():
                 config.SEGMENT_BY_CATEGORY = bool(company_config['lisa_wb_segment_by_category'])
             if 'lisa_wb_auto_reply' in company_config:
                 config.AUTO_REPLY = bool(company_config['lisa_wb_auto_reply'])
-                config.AUTO_APPROVE = config.AUTO_REPLY
             if 'lisa_wb_recipient_override' in company_config:
                 config.RECIPIENT_OVERRIDE = (company_config['lisa_wb_recipient_override'] or '').strip()
             print(f"[Odoo Config] Dynamically loaded from Odoo: "
@@ -520,12 +519,6 @@ def send_winback_email(
                     tag = "WB-3"
         except Exception as e:
             print(f"Warning: Failed to derive campaign stage tag: {e}")
-            
-    if tag:
-        tag_str = f"[{tag.upper().strip()}]"
-        if tag_str not in subject:
-            subject = f"{subject} {tag_str}"
-
     # Production mode - Write/send via Odoo mail template and custom fields
     try:
         load_odoo_company_config()

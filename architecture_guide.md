@@ -23,15 +23,14 @@ graph TD
     Constraints -->|Customer Replied| Reply[Replied: Halt & Classify Reply]
     Constraints -->|Due & Eligible| AICopywriter[3. AI Copywriter]
 
-    %% AI & HIL Approval Phase
-    AICopywriter --> |Drafts Personalized HTML Email| HIL{4. Sales Rep Review}
-    HIL -->|Approve| SendEmail[5. Send Email & Log]
-    HIL -->|Edit| SendEmail
-    HIL -->|Regenerate| AICopywriter
-    HIL -->|Reject| Skip
+    %% Sending & Review Phase
+    AICopywriter -->|Drafts Personalized HTML Email| Route{4. Auto-Reply Mode?}
+    Route -->|Yes: AUTO_REPLY=True| SendEmail[5. Send Email & Log]
+    Route -->|No: AUTO_REPLY=False| SaveDraft[5. Save Draft to Odoo Chatter]
 
     %% Sending & Output Phase
     SendEmail --> |Email Sent| UpdateState[6. Update State]
+    SaveDraft --> |Draft Saved| UpdateState
     UpdateState --> |Log Chatter / Native Note| OdooChatter[Odoo CRM / Chatter]
 
     %% Styles
@@ -41,7 +40,7 @@ graph TD
     classDef skipped fill:#444441,stroke:#b4b2a9,color:#fff;
     
     class Start,AICopywriter,SendEmail main;
-    class Constraints,HIL check;
+    class Constraints check;
     class Reactivated,Reply success;
     class Skip,HaltCold,HaltSuppressed,HaltMemory skipped;
 ```
@@ -64,12 +63,10 @@ Before any heavy AI calculations occur, the system runs through a checklist:
 ### 3. AI Email Drafting (The Spoke)
 If a customer passes all checks and is due for an email, the system wakes up the **AI Copywriter**. The AI looks at what product categories the customer previously bought to draft a highly personalized, low-pressure email signature and re-engagement copy.
 
-### 4. Sales Representative Review (Human-in-the-Loop)
-No emails are sent automatically. The system pauses and presents the email to the salesperson. The salesperson can:
-* **Approve**: Send the email immediately.
-* **Edit**: Adjust the subject or the body text manually.
-* **Regenerate**: Ask the AI to write it again with a different tone.
-* **Reject**: Skip this email entirely.
+### 4. Review & Dispatch Mode (Odoo Integration)
+The system routes the email based on the Odoo configuration:
+* **Auto-Reply Mode (`AUTO_REPLY` is True)**: The email is sent automatically to the customer without any manual intervention.
+* **Manual Review Mode (`AUTO_REPLY` is False)**: The email is saved as a draft on the Odoo customer record (`res.partner`) and posted to the Chatter log, allowing sales representatives to review, edit, and send it natively from inside the Odoo user interface.
 
 ### 5. Send & Log (Odoo Integration)
 * **Outreach**: The email is sent to the customer (via Gmail in test mode, or via Odoo in production).
