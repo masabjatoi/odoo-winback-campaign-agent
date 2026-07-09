@@ -56,7 +56,6 @@ def validate():
     required = [
         ("ODOO_URL", ODOO_URL),
         ("ODOO_DB", ODOO_DB),
-        ("ODOO_USERNAME", ODOO_USERNAME),
         ("ODOO_API_KEY", ODOO_API_KEY),
     ]
     supported_providers = {'mistral', 'google', 'gemini', 'groq'}
