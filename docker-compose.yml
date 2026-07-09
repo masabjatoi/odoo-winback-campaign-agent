@@ -13,12 +13,7 @@ services:
     dns:
       - 1.1.1.1
       - 8.8.8.8
-    networks:
-      - odoo19-net
 
 volumes:
   winback-db-volume:
 
-networks:
-  odoo19-net:
-    external: true

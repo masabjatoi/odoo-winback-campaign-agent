@@ -4,10 +4,8 @@ from odoo_client import OdooClient
 c = OdooClient()
 c.authenticate()
 
-# 1. Delete all mail messages on res.partner containing [Win-Back]
 search_domain = [
     ('model', '=', 'res.partner'),
-    '|',
     ('message_type', 'in', ['email', 'email_outgoing', 'comment']),
     ('body', 'ilike', '%[Win-Back]%')
 ]
@@ -16,7 +14,10 @@ if messages:
     print(f"Found {len(messages)} win-back chatter messages to delete:")
     msg_ids = [m['id'] for m in messages]
     for m in messages:
-        print(f"  Message ID: {m['id']} on Partner ID: {m['res_id']} - Snippet: {m['body'][:80]}...")
+        # Safe encoding print to avoid Windows charmap errors
+        snippet = m.get('body', '') or ''
+        snippet_safe = snippet[:80].encode('ascii', errors='replace').decode('ascii')
+        print(f"  Message ID: {m['id']} on Partner ID: {m['res_id']} - Snippet: {snippet_safe}...")
     c.execute('mail.message', 'unlink', [msg_ids])
     print("[Success] All matching chatter messages have been deleted from the database!\n")
 else:

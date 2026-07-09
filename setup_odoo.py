@@ -104,24 +104,24 @@ def setup():
         print("[Setup] Modules list updated.")
         
         module = client.execute('ir.module.module', 'search_read', [
-            [('name', '=', 'lisa_win_back_agent')]
+            [('name', '=', 'Win_Back_Agent_odoo')]
         ], {'fields': ['id', 'state']})
         
         if module:
             m_id = module[0]['id']
             state = module[0]['state']
             if state in ('uninstalled', 'to install'):
-                print("[Setup] Installing 'lisa_win_back_agent' module...")
+                print("[Setup] Installing 'Win_Back_Agent_odoo' module...")
                 client.execute('ir.module.module', 'button_immediate_install', [[m_id]])
-                print("[Success] Module 'lisa_win_back_agent' installed successfully!")
+                print("[Success] Module 'Win_Back_Agent_odoo' installed successfully!")
             else:
-                print("[Setup] Upgrading 'lisa_win_back_agent' module...")
+                print("[Setup] Upgrading 'Win_Back_Agent_odoo' module...")
                 client.execute('ir.module.module', 'button_immediate_upgrade', [[m_id]])
-                print("[Success] Module 'lisa_win_back_agent' upgraded successfully!")
+                print("[Success] Module 'Win_Back_Agent_odoo' upgraded successfully!")
         else:
-            print("[Warning] Module 'lisa_win_back_agent' not found in database. Make sure it is placed in Odoo's addons path.")
+            print("[Warning] Module 'Win_Back_Agent_odoo' not found in database. Make sure it is placed in Odoo's addons path.")
     except Exception as e:
-        print(f"[Error] Failed to update/install Odoo module 'lisa_win_back_agent': {e}")
+        print(f"[Error] Failed to update/install Odoo module 'Win_Back_Agent_odoo': {e}")
         
     print("\n" + "=" * 60)
     print("  Setup execution completed successfully!")
