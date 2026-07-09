@@ -134,8 +134,7 @@ def load_odoo_company_config():
                 'lisa_wb_offer_email2',
                 'lisa_wb_max_emails',
                 'lisa_wb_segment_by_category',
-                'lisa_wb_auto_reply',
-                'lisa_wb_recipient_override'
+                'lisa_wb_auto_reply'
             ])]
         ], {'fields': ['name']})
         fields_to_read.extend([f['name'] for f in lisa_fields])
@@ -158,16 +157,13 @@ def load_odoo_company_config():
                 config.SEGMENT_BY_CATEGORY = bool(company_config['lisa_wb_segment_by_category'])
             if 'lisa_wb_auto_reply' in company_config:
                 config.AUTO_REPLY = bool(company_config['lisa_wb_auto_reply'])
-            if 'lisa_wb_recipient_override' in company_config:
-                config.RECIPIENT_OVERRIDE = (company_config['lisa_wb_recipient_override'] or '').strip()
             print(f"[Odoo Config] Dynamically loaded from Odoo: "
                   f"INACTIVITY_THRESHOLD_DAYS={config.INACTIVITY_THRESHOLD_DAYS}, "
                   f"WINBACK_INTERVAL_DAYS={config.WINBACK_INTERVAL_DAYS}, "
                   f"WINBACK_OFFER_EMAIL2={config.WINBACK_OFFER_EMAIL2}, "
                   f"MAX_WINBACK_EMAILS={config.MAX_WINBACK_EMAILS}, "
                   f"SEGMENT_BY_CATEGORY={config.SEGMENT_BY_CATEGORY}, "
-                  f"AUTO_REPLY={config.AUTO_REPLY}, "
-                  f"RECIPIENT_OVERRIDE={config.RECIPIENT_OVERRIDE or 'None'} [{'ACTIVE' if config.RECIPIENT_OVERRIDE else 'DISABLED'}]")
+                  f"AUTO_REPLY={config.AUTO_REPLY}")
             _config_loaded = True
     except Exception as e:
         print(f"[Odoo Config] [Warning] Failed to load dynamic config from Odoo: {e}. Using local config defaults.")
