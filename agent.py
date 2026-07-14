@@ -640,14 +640,7 @@ def discovery_node(state) -> dict:
             "leads_to_process": [],
             "processed_leads": []
         }
-    print(f"[Agent] [Node] Discovery found {len(inactive_customers)} inactive candidate(s) in Odoo.")
-
-    # 3. Apply runtime limit if set to avoid performing too many state checkups
-    limit = config.get_limit()
-    if limit:
-        inactive_customers = inactive_customers[:limit]
-        print(f"[Agent] [Node] Applied processing limit to discovery: truncated to {len(inactive_customers)} candidate(s).")
-
+    
     # 4. Reconstruct state and build the queue of active leads dynamically
     active_leads = []
     for c in inactive_customers:
@@ -655,14 +648,20 @@ def discovery_node(state) -> dict:
         name = c['name']
         
         lead_state = get_campaign_lead.invoke({"partner_id": partner_id})
-        if lead_state and lead_state.get("status") == "active":
+        if lead_state and lead_state.get("status") == "active" and not lead_state.get("has_pending_draft"):
             active_leads.append({
                 "partner_id": partner_id,
                 "partner_name": name
             })
             
+    # 3. Apply runtime limit if set to avoid performing too many state checkups
+    limit = config.get_limit()
+    if limit:
+        active_leads = active_leads[:limit]
+        print(f"[Agent] [Node] Applied processing limit to active queue: truncated to {len(active_leads)} active lead(s).")
+            
     print(f"[Agent] [Node] Active queue compiled from Odoo/JSON: {len(active_leads)} lead(s)")
-
+ 
     return {
         "leads_to_process": active_leads,
         "processed_leads": []
