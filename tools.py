@@ -481,9 +481,9 @@ def send_winback_email(
     customer_email: str,
     subject: str,
     body_html: str,
-    salesperson_name: str = None,
-    salesperson_email: str = None,
-    campaign_stage_tag: str = None
+    salesperson_name: str | None = None,
+    salesperson_email: str | None = None,
+    campaign_stage_tag: str | None = None
 ) -> dict:
     """Sends a win-back outreach email to the customer. 
     
@@ -1195,14 +1195,15 @@ def get_campaign_lead(partner_id: int) -> dict:
 @tool
 def update_campaign_lead(
     partner_id: int,
-    campaign_stage: str = None,
-    last_email_sent_date: str = None,
-    next_email_date: str = None,
-    status: str = None,
-    is_blacklisted: int = None,
-    suppressed: int = None,
-    suppression_reason: str = None
+    campaign_stage: str | None = None,
+    last_email_sent_date: str | None = None,
+    next_email_date: str | None = None,
+    status: str | None = None,
+    is_blacklisted: int | None = None,
+    suppressed: int | None = None,
+    suppression_reason: str | None = None
 ) -> dict:
+
     """Updates the campaign lead state natively in Odoo's winback.campaign model.
     
     Args:
@@ -1358,7 +1359,7 @@ def get_customer_memories(partner_id: int) -> str:
 
 
 @tool
-def manage_todo_list(partner_id: int, action: str, task_name: str = None, status: str = None) -> str:
+def manage_todo_list(partner_id: int, action: str, task_name: str | None = None, status: str | None = None) -> str:
     """Manages the orchestrator's checklist for processing a customer's campaign.
     
     Args:
