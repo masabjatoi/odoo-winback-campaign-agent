@@ -549,16 +549,18 @@ def send_winback_email(
 
         # Helper: post a clean note to chatter via direct mail.message create (bypasses XML-RPC HTML escaping)
         def _post_wb_chatter(body_html: str):
-            subtypes = models.execute_kw(db, uid, password, 'mail.message.subtype', 'search_read', [
-                [('name', '=', 'Note')]
-            ], {'fields': ['id'], 'limit': 1})
-            subtype_id = subtypes[0]['id'] if subtypes else None
+            global _note_subtype_id
+            if _note_subtype_id is None:
+                subtypes = models.execute_kw(db, uid, password, 'mail.message.subtype', 'search_read', [
+                    [('name', '=', 'Note')]
+                ], {'fields': ['id'], 'limit': 1})
+                _note_subtype_id = subtypes[0]['id'] if subtypes else None
             models.execute_kw(db, uid, password, 'mail.message', 'create', [{
                 'model': 'res.partner',
                 'res_id': int(partner_id),
                 'body': body_html,
                 'message_type': 'comment',
-                'subtype_id': subtype_id
+                'subtype_id': _note_subtype_id
             }])
 
         # Step 2: If auto_reply is True, trigger the Odoo mail template to send immediately
@@ -656,10 +658,13 @@ def log_campaign_note(partner_id: int, message_body: str) -> dict:
     """
     try:
         models, uid, db, password = get_odoo_client()
-        subtypes = models.execute_kw(db, uid, password, 'mail.message.subtype', 'search_read', [
-            [('name', '=', 'Note')]
-        ], {'fields': ['id'], 'limit': 1})
-        subtype_id = subtypes[0]['id'] if subtypes else None
+        global _note_subtype_id
+        if _note_subtype_id is None:
+            subtypes = models.execute_kw(db, uid, password, 'mail.message.subtype', 'search_read', [
+                [('name', '=', 'Note')]
+            ], {'fields': ['id'], 'limit': 1})
+            _note_subtype_id = subtypes[0]['id'] if subtypes else None
+        subtype_id = _note_subtype_id
 
         models.execute_kw(db, uid, password, 'mail.message', 'create', [{
             'model': 'res.partner',
@@ -712,24 +717,29 @@ def schedule_partner_activity(
         # Calculate deadline date (e.g. today + days_to_deadline)
         deadline = (datetime.now(timezone.utc) + timedelta(days=days_to_deadline)).strftime('%Y-%m-%d')
         
-        # Look up activity type dynamically
-        activity_type_id = 4  # Default fallback
-        try:
-            activity_types = models.execute_kw(
-                db, uid, password, 'mail.activity.type', 'search',
-                [[('name', 'ilike', 'To-Do')]]
-            )
-            if activity_types:
-                activity_type_id = activity_types[0]
-            else:
+        # Look up activity type dynamically (cached after first fetch)
+        global _todo_activity_type_id
+        if _todo_activity_type_id is None:
+            try:
                 activity_types = models.execute_kw(
                     db, uid, password, 'mail.activity.type', 'search',
-                    [[('category', '=', 'default')]]
+                    [[('name', 'ilike', 'To-Do')]]
                 )
                 if activity_types:
-                    activity_type_id = activity_types[0]
-        except Exception as lookup_err:
-            print(f"Warning: Could not dynamically lookup activity type: {lookup_err}. Using default ID 4.")
+                    _todo_activity_type_id = activity_types[0]
+                else:
+                    activity_types = models.execute_kw(
+                        db, uid, password, 'mail.activity.type', 'search',
+                        [[('category', '=', 'default')]]
+                    )
+                    if activity_types:
+                        _todo_activity_type_id = activity_types[0]
+                    else:
+                        _todo_activity_type_id = 4  # hard fallback
+            except Exception as lookup_err:
+                print(f"Warning: Could not dynamically lookup activity type: {lookup_err}. Using default ID 4.")
+                _todo_activity_type_id = 4
+        activity_type_id = _todo_activity_type_id
         
         vals = {
             'res_model': 'res.partner',
@@ -869,6 +879,10 @@ def check_recent_outreach(partner_id: int, days_limit: int = 7) -> dict:
 
 
 _crm_lead_model_exists = None
+
+# Module-level caches for static Odoo lookup values (fetched once, reused forever)
+_note_subtype_id = None
+_todo_activity_type_id = None
 
 @tool
 def check_suppression_criteria(partner_id: int) -> dict:

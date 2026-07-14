@@ -9,44 +9,32 @@ class OdooClient:
     def __init__(self):
         self._url = config.ODOO_URL
         self._db = config.ODOO_DB
-        self._username = config.ODOO_USERNAME
         self._password = config.ODOO_API_KEY
         self._uid = None
         self._models = None
 
     def authenticate(self):
-        """Authenticates with Odoo and establishes the XML-RPC connection."""
-        if self._username:
-            common = xmlrpc.client.ServerProxy(f"{self._url}/xmlrpc/2/common", allow_none=True)
-            self._uid = common.authenticate(self._db, self._username, self._password, {})
-            if not self._uid:
-                raise PermissionError(
-                    "Odoo authentication failed. "
-                    "Check ODOO_URL, ODOO_DB, ODOO_USERNAME and ODOO_API_KEY in your .env file."
+        """Authenticates with Odoo using API Key. Auto-probes for the user UID."""
+        print("[Odoo] Authenticating via API Key (UID probe)...")
+        models = xmlrpc.client.ServerProxy(f"{self._url}/xmlrpc/2/object", allow_none=True)
+        for uid in range(1, 101):
+            try:
+                res = models.execute_kw(
+                    self._db, uid, self._password,
+                    'res.users', 'read', [[uid]], {'fields': ['id']}
                 )
-            self._models = xmlrpc.client.ServerProxy(f"{self._url}/xmlrpc/2/object", allow_none=True)
-            print(f"[Odoo] Authenticated as UID {self._uid}")
-        else:
-            # Username is missing - Auto-probe UID using the API Key (range 1-100)
-            print("[Odoo] Username not provided. Auto-probing user ID (UID) using API Key...")
-            models = xmlrpc.client.ServerProxy(f"{self._url}/xmlrpc/2/object", allow_none=True)
-            for uid in range(1, 101):
-                try:
-                    res = models.execute_kw(
-                        self._db, uid, self._password,
-                        'res.users', 'read', [[uid]], {'fields': ['id']}
-                    )
-                    if res:
-                        self._uid = uid
-                        self._models = models
-                        print(f"[Odoo] Auto-probed and authenticated as UID {self._uid}")
-                        return
-                except Exception:
-                    pass
-            raise PermissionError(
-                "Odoo authentication failed. No valid UID found for your API key. "
-                "Check ODOO_URL, ODOO_DB and ODOO_API_KEY in your .env file."
-            )
+                if res:
+                    self._uid = uid
+                    self._models = models
+                    print(f"[Odoo] Authenticated as UID {self._uid}")
+                    return
+            except Exception:
+                pass
+        raise PermissionError(
+            "Odoo authentication failed. No valid UID found for your API key. "
+            "Check ODOO_URL, ODOO_DB and ODOO_API_KEY in your .env file."
+        )
+
 
     def _do_execute(self, model: str, method: str, args: list, kwargs: dict):
         # Always use a fresh ServerProxy to prevent connection reuse timeouts (e.g. 'Idle' / 'Request-sent')

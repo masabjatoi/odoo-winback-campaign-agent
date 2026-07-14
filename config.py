@@ -8,7 +8,6 @@ load_dotenv(dotenv_path=dotenv_path, override=True)
 # Odoo Connection
 ODOO_URL = os.getenv('ODOO_URL', '')
 ODOO_DB = os.getenv('ODOO_DB', '')
-ODOO_USERNAME = os.getenv('ODOO_USERNAME', '')
 ODOO_API_KEY = os.getenv('ODOO_API_KEY', '')
 
 # LLM Provider & Keys
