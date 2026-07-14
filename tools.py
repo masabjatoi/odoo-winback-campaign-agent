@@ -358,7 +358,7 @@ def check_partner_status(partner_id: int) -> dict:
         models, uid, db, password = get_odoo_client()
         records = models.execute_kw(
             db, uid, password, 'res.partner', 'search_read',
-            [[('id', '=', partner_id)]],
+            [[('id', '=', int(partner_id))]],
             {'fields': ['active', 'email']}
         )
         if not records:
@@ -402,7 +402,7 @@ def check_new_orders(partner_id: int, since_date_utc: str) -> list:
         since_date_utc = format_date_for_odoo(since_date_utc)
         models, uid, db, password = get_odoo_client()
         domain = [
-            ('partner_id', '=', partner_id),
+            ('partner_id', '=', int(partner_id)),
             ('state', 'in', ['sale', 'done']),
             ('date_order', '>', since_date_utc)
         ]
@@ -431,7 +431,7 @@ def check_customer_replies(partner_id: int, since_date_utc: str) -> list:
         models, uid, db, password = get_odoo_client()
         
         # Fetch partner's email to verify by email_from as well
-        partner_data = models.execute_kw(db, uid, password, 'res.partner', 'read', [[partner_id]], {'fields': ['email']})
+        partner_data = models.execute_kw(db, uid, password, 'res.partner', 'read', [[int(partner_id)]], {'fields': ['email']})
         partner_email = partner_data[0].get('email') if partner_data else None
         partner_email_lower = partner_email.strip().lower() if partner_email else None
         
@@ -443,11 +443,11 @@ def check_customer_replies(partner_id: int, since_date_utc: str) -> list:
         if partner_email_lower:
             domain.extend([
                 '|',
-                ('author_id', '=', partner_id),
+                ('author_id', '=', int(partner_id)),
                 ('email_from', 'ilike', partner_email_lower)
             ])
         else:
-            domain.append(('author_id', '=', partner_id))
+            domain.append(('author_id', '=', int(partner_id)))
             
         fields = ['id', 'author_id', 'email_from', 'date', 'body']
         messages = models.execute_kw(db, uid, password, 'mail.message', 'search_read', [domain], {'fields': fields})
@@ -460,7 +460,7 @@ def check_customer_replies(partner_id: int, since_date_utc: str) -> list:
             email_from = msg.get('email_from') or ''
             
             # Match by partner ID
-            if author_id == partner_id:
+            if author_id == int(partner_id):
                 replies.append(msg)
                 continue
                 
@@ -733,7 +733,7 @@ def schedule_partner_activity(
         
         vals = {
             'res_model': 'res.partner',
-            'res_id': partner_id,
+            'res_id': int(partner_id),
             'activity_type_id': activity_type_id,
             'summary': summary,
             'note': note_html,
@@ -884,7 +884,7 @@ def check_suppression_criteria(partner_id: int) -> dict:
         models, uid, db, password = get_odoo_client()
         
         # 1. Check partner categories/tags (category_id field points to res.partner.category)
-        partner_data = models.execute_kw(db, uid, password, 'res.partner', 'read', [[partner_id]], {'fields': ['category_id']})
+        partner_data = models.execute_kw(db, uid, password, 'res.partner', 'read', [[int(partner_id)]], {'fields': ['category_id']})
         if partner_data:
             tag_ids = partner_data[0].get('category_id', [])
             if tag_ids:
@@ -1289,7 +1289,7 @@ def save_customer_memory(partner_id: int, memory_text: str) -> dict:
         models, uid, db, password = get_odoo_client()
         records = models.execute_kw(
             db, uid, password, 'res.partner', 'read',
-            [[partner_id]],
+            [[int(partner_id)]],
             {'fields': ['comment']}
         )
         existing_comment = ""
@@ -1304,7 +1304,7 @@ def save_customer_memory(partner_id: int, memory_text: str) -> dict:
             
         models.execute_kw(
             db, uid, password, 'res.partner', 'write',
-            [[partner_id], {'comment': new_comment}]
+            [[int(partner_id)], {'comment': new_comment}]
         )
         print(f"Memory saved natively in Odoo for partner {partner_id}: {memory_text}")
         return {"success": True}
@@ -1327,7 +1327,7 @@ def get_customer_memories(partner_id: int) -> str:
         models, uid, db, password = get_odoo_client()
         records = models.execute_kw(
             db, uid, password, 'res.partner', 'read',
-            [[partner_id]],
+            [[int(partner_id)]],
             {'fields': ['comment']}
         )
         if records and records[0].get('comment'):

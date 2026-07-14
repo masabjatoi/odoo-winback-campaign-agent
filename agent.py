@@ -885,13 +885,13 @@ def process_lead_node(state) -> dict:
         replies = check_customer_replies.invoke({"partner_id": partner_id, "since_date_utc": reply_since_date})
         if replies:
             print(f"  [Reply Detected] Customer replied to outreach (stage: '{format_stage(campaign_stage)}'). Stopping campaign and notifying salesperson...")
-            # Pre-set status to 'replied' so the orchestrator knows the campaign must stop.
+            # Pre-set status to 'completed' so the orchestrator knows the campaign must stop.
             # The reply_analyst subagent (invoked by the orchestrator) will update this further
             # (e.g. to 'opt_out') if the reply is an explicit unsubscribe request.
-            update_campaign_lead.invoke({"partner_id": partner_id, "status": "replied"})
+            update_campaign_lead.invoke({"partner_id": partner_id, "status": "completed"})
             run_agent_for_lead(partner_id)
             updated_lead = get_campaign_lead.invoke({"partner_id": partner_id})
-            status = updated_lead.get("status", "replied")
+            status = updated_lead.get("status", "completed")
             stage = updated_lead.get("campaign_stage", campaign_stage)
             status_log = {
                 "partner_id": partner_id,

@@ -97,31 +97,31 @@ def setup():
     except Exception as e:
         print(f"[Error] Failed to configure incoming IMAP mail server: {e}")
 
-    # 5. Update module list & Install/Upgrade lisa_win_back_agent
+    # 5. Update module list & Install/Upgrade win_back_agent
     print("[Setup] Updating Odoo modules list...")
     try:
         client.execute('ir.module.module', 'update_list', [])
         print("[Setup] Modules list updated.")
         
         module = client.execute('ir.module.module', 'search_read', [
-            [('name', '=', 'Win_Back_Agent_odoo')]
-        ], {'fields': ['id', 'state']})
+            [('name', '=', 'win_back_agent')]
+        ], {'fields': ['id', 'state', 'name']})
         
         if module:
             m_id = module[0]['id']
             state = module[0]['state']
             if state in ('uninstalled', 'to install'):
-                print("[Setup] Installing 'Win_Back_Agent_odoo' module...")
+                print(f"[Setup] Installing '{module[0]['name']}' module...")
                 client.execute('ir.module.module', 'button_immediate_install', [[m_id]])
-                print("[Success] Module 'Win_Back_Agent_odoo' installed successfully!")
+                print(f"[Success] Module '{module[0]['name']}' installed successfully!")
             else:
-                print("[Setup] Upgrading 'Win_Back_Agent_odoo' module...")
+                print(f"[Setup] Upgrading '{module[0]['name']}' module...")
                 client.execute('ir.module.module', 'button_immediate_upgrade', [[m_id]])
-                print("[Success] Module 'Win_Back_Agent_odoo' upgraded successfully!")
+                print(f"[Success] Module '{module[0]['name']}' upgraded successfully!")
         else:
-            print("[Warning] Module 'Win_Back_Agent_odoo' not found in database. Make sure it is placed in Odoo's addons path.")
+            print("[Warning] win_back_agent module not found in database.")
     except Exception as e:
-        print(f"[Error] Failed to update/install Odoo module 'Win_Back_Agent_odoo': {e}")
+        print(f"[Error] Failed to update/install Odoo module 'win_back_agent': {e}")
         
     print("\n" + "=" * 60)
     print("  Setup execution completed successfully!")

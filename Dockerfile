@@ -21,7 +21,7 @@ COPY . /app/
 
 # Setup the cron configuration file (runs daily at 3:00 AM UTC)
 # Note: Cron requires an empty line at the end of the file to execute
-RUN echo "0 3 * * * cd /app && python main.py >> /var/log/cron.log 2>&1" > /etc/cron.d/winback-cron && \
+RUN echo "0 3 * * * cd /app && python3 main.py >> /var/log/cron.log 2>&1" > /etc/cron.d/winback-cron && \
     chmod 0644 /etc/cron.d/winback-cron && \
     crontab /etc/cron.d/winback-cron
 

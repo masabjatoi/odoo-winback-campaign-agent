@@ -51,7 +51,7 @@ The agent runs completely database-free locally. It synchronizes and tracks camp
 
 ### ⚙️ Step 0 (One-Time): Install the Odoo Custom Addon
 
-This agent requires a companion Odoo addon (`lisa_win_back_agent`) to be installed in your Odoo instance. It adds:
+This agent requires a companion Odoo addon (`win_back_agent`) to be installed in your Odoo instance. It adds:
 - Custom fields on `res.partner` for storing draft email content, campaign stage, and status
 - A dedicated **Lisa AI Win-Back** configuration tab in `Settings > General Settings`
 - Custom views and settings for the Win-Back Campaign Drip Campaign
@@ -60,13 +60,13 @@ This agent requires a companion Odoo addon (`lisa_win_back_agent`) to be install
 
 ```bash
 # 1. Clone the addon into your Odoo addons path
-git clone https://github.com/masabjatoi/Win-Back-Agent-odoo.git /path/to/odoo/addons/lisa_win_back_agent
+git clone https://github.com/masabjatoi/Win-Back-Agent-odoo.git /path/to/odoo/addons/win_back_agent
 
 # 2. Restart Odoo and update the module list
 #    Settings > Technical > Update Modules List
 
 # 3. Install the module
-#    Settings > Apps > Search "lisa_win_back_agent" > Install
+#    Settings > Apps > Search "win_back_agent" > Install
 ```
 
 > Once installed, all campaign parameters (inactivity threshold, interval days, email count, etc.) will appear under:
