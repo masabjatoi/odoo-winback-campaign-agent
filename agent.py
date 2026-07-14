@@ -643,7 +643,14 @@ def discovery_node(state) -> dict:
     
     # 4. Reconstruct state and build the queue of active leads dynamically
     active_leads = []
+    limit = config.get_limit()
+    
     for c in inactive_customers:
+        # Stop checking early if we have gathered enough active leads to satisfy the limit
+        if limit and len(active_leads) >= limit:
+            print(f"[Agent] [Node] Processing limit of {limit} active lead(s) met. Stopping discovery check early.")
+            break
+            
         partner_id = c['id']
         name = c['name']
         
@@ -653,12 +660,6 @@ def discovery_node(state) -> dict:
                 "partner_id": partner_id,
                 "partner_name": name
             })
-            
-    # 3. Apply runtime limit if set to avoid performing too many state checkups
-    limit = config.get_limit()
-    if limit:
-        active_leads = active_leads[:limit]
-        print(f"[Agent] [Node] Applied processing limit to active queue: truncated to {len(active_leads)} active lead(s).")
             
     print(f"[Agent] [Node] Active queue compiled from Odoo/JSON: {len(active_leads)} lead(s)")
  
