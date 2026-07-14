@@ -18,16 +18,15 @@ The goal of the **Win-Back Sales Agent** is to automatically identify inactive c
 
 We have successfully completed all phases of the pipeline, transitioning it to a fully Odoo-native model:
 
-### ⚙️ Configuration File: [[.env](file:///d:/Win-Back%20Agent/.env)]
+### ⚙️ Configuration File: [[.env](file:///d:/Lisa/Win-Back%20Agent/.env)]
 Contains all connection parameters and credentials:
 * `ODOO_URL` (Odoo server URL)
 * `ODOO_DB` (Odoo database name)
-* `ODOO_USERNAME` (Odoo username)
 * `ODOO_API_KEY` (Odoo API Key / password)
 * `LLM_PROVIDER` (Selected LLM provider: `mistral`, `gemini`, or `groq`)
 * `MISTRAL_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY` (Provider API keys)
 
-### 🛠️ Custom Odoo Tools: [[tools.py](file:///d:/Win-Back%20Agent/tools.py)]
+### 🛠️ Custom Odoo Tools: [[tools.py](file:///d:/Lisa/Win-Back%20Agent/tools.py)]
 A module containing standard, reusable LangChain tool definitions decorated with `@tool` to allow easy integration into the Deep Agent:
 1. **`get_inactive_partners`**: Queries Odoo for active, non-blacklisted partner records who have not placed a confirmed order in $X$ days.
 2. **`check_partner_status`**: Queries Odoo `res.partner` and `mail.blacklist` to check if a customer is still active and not blacklisted.
@@ -37,7 +36,7 @@ A module containing standard, reusable LangChain tool definitions decorated with
 6. **`log_campaign_note`**: Logs campaign updates and stage transitions to the customer's chatter log in Odoo.
 7. **`schedule_partner_activity`**: Automatically creates a To-Do activity (`mail.activity`) in Odoo assigned to the customer's salesperson.
 
-### 🚀 Main Pipeline Runner: [[main.py](file:///d:/Win-Back%20Agent/main.py)]
+### 🚀 Main Pipeline Runner: [[main.py](file:///d:/Lisa/Win-Back%20Agent/main.py)]
 The orchestrating script that runs the discovery loop:
 1. Validates environmental configurations.
 2. Invokes `get_inactive_partners` using the threshold loaded dynamically from Odoo company settings to check inactive candidates.
@@ -62,25 +61,25 @@ Through Odoo inspection, we verified and mapped the following native parameters:
 The agent runs completely database-free locally. It utilizes a dynamic, state-driven LangGraph pipeline that aligns directly with the Cross-Sell Agent architecture:
 
 ### 📁 Codebase Organization
-- **[main.py](file:///d:/Win-Back%20Agent/main.py)**: The entry point script that validates configurations, compiles the LangGraph workflow, and runs it.
-- **[config.py](file:///d:/Win-Back%20Agent/config.py)**: Centralizes environment parameters, Odoo configs, and performs credential validation.
-- **[prompt.py](file:///d:/Win-Back%20Agent/prompt.py)**: Stores prompt templates and instructions for B2B summary reporting.
-- **[graph.py](file:///d:/Win-Back%20Agent/graph.py)**: Defines the workflow's State (`PipelineState`), wires the nodes and transitions, and maps conditional routing edges.
-- **[agent.py](file:///d:/Win-Back%20Agent/agent.py)**: Implements the graph node executors:
+- **[main.py](file:///d:/Lisa/Win-Back%20Agent/main.py)**: The entry point script that validates configurations, compiles the LangGraph workflow, and runs it.
+- **[config.py](file:///d:/Lisa/Win-Back%20Agent/config.py)**: Centralizes environment parameters, Odoo configs, and performs credential validation.
+- **[prompt.py](file:///d:/Lisa/Win-Back%20Agent/prompt.py)**: Stores prompt templates and instructions for B2B summary reporting.
+- **[graph.py](file:///d:/Lisa/Win-Back%20Agent/graph.py)**: Defines the workflow's State (`PipelineState`), wires the nodes and transitions, and maps conditional routing edges.
+- **[agent.py](file:///d:/Lisa/Win-Back%20Agent/agent.py)**: Implements the graph node executors:
   * `discovery_node`: Scans candidates and builds the queue.
   * `process_lead_node`: Runs the orchestrator Deep Agent (with sub-agents nested inline) on a single lead.
   * `summary_node`: Uses LLM to draft a run execution report.
-- **[tools.py](file:///d:/Win-Back%20Agent/tools.py)**: Module containing all custom Odoo tools.
+- **[tools.py](file:///d:/Lisa/Win-Back%20Agent/tools.py)**: Module containing all custom Odoo tools.
 
 ### 🤖 Agent Roles & Playbooks
 1. **Main Orchestrator Agent (The Hub):**
-    * **Playbook:** [orchestrator_playbook.md](file:///d:/Win-Back%20Agent/skills/orchestrator_playbook.md)
+    * **Playbook:** [orchestrator_playbook.md](file:///d:/Lisa/Win-Back%20Agent/skills/orchestrator_playbook.md)
     * **Function:** Sequentially executes lead checkups, checks suppression, checks timing intervals, and delegates creative reasoning.
 2. **`reply_analyst` Sub-Agent (Spoke):**
-    * **Playbook:** [reply_analyst_playbook.md](file:///d:/Win-Back%20Agent/skills/reply_analyst_playbook.md)
+    * **Playbook:** [reply_analyst_playbook.md](file:///d:/Lisa/Win-Back%20Agent/skills/reply_analyst_playbook.md)
     * **Function:** Evaluates incoming customer emails, classifies intent, and automatically invokes blacklist or activity tools.
 3. **`email_copywriter` Sub-Agent (Spoke):**
-    * **Playbook:** [copywriter_playbook.md](file:///d:/Win-Back%20Agent/skills/copywriter_playbook.md)
+    * **Playbook:** [copywriter_playbook.md](file:///d:/Lisa/Win-Back%20Agent/skills/copywriter_playbook.md)
     * **Function:** Custom-tailors HTML outreach emails, querying historical Odoo purchase categories for Email 2 recommendations.
 
 ---
